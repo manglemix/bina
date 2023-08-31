@@ -1,0 +1,16 @@
+[workspace]
+
+members = [
+    'bina-ecs',
+    'bina',
+    'bina-macros',
+    'bina-app'
+]
+
+[workspace.dependencies]
+
+[profile.release]
+lto = "thin"
+
+[profile.dev]
+opt-level = 2
