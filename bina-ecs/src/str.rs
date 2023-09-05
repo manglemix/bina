@@ -1,10 +1,11 @@
 use std::{
-    sync::{Arc, OnceLock},
+    sync::OnceLock,
     time::Duration,
 };
 
 use fxhash::FxHashSet;
 use parking_lot::RwLock;
+use triomphe::Arc;
 
 static SHARED_STRINGS: OnceLock<RwLock<FxHashSet<Arc<str>>>> = OnceLock::new();
 
@@ -20,7 +21,7 @@ fn get_shared_strings() -> &'static RwLock<FxHashSet<Arc<str>>> {
                 .get()
                 .unwrap()
                 .write()
-                .extract_if(|x| Arc::strong_count(x) == 1);
+                .extract_if(|x| Arc::count(x) == 1);
         });
         Default::default()
     })
@@ -35,8 +36,10 @@ impl ToSharedString for String {
                 return shared.clone();
             }
         }
+        // let mut shared = UniqueArc::new_uninit();
+        // shared.write()
         let mut writer = map.write();
-        let shared: Arc<str> = Arc::from(self.into_boxed_str());
+        let shared: Arc<str> = Arc::from(self);
         writer.insert(shared.clone());
         shared
     }
@@ -52,7 +55,7 @@ impl ToSharedString for &str {
             }
         }
         let mut writer = map.write();
-        let shared: Arc<str> = Arc::from(self.to_string().into_boxed_str());
+        let shared: Arc<str> = Arc::from(self.to_string());
         writer.insert(shared.clone());
         shared
     }

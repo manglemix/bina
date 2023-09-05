@@ -1,38 +1,7 @@
 use proc_macro::TokenStream;
-use proc_macro2::Ident;
-use quote::{quote, format_ident};
-use syn::{parse_macro_input, Token, Attribute, Visibility, Type, Expr, parse::{Parse, ParseStream}, DeriveInput};
-
-
-struct ItemStatic {
-    pub _attrs: Vec<Attribute>,
-    pub vis: Visibility,
-    pub _static_token: Token![static],
-    pub mutability: Option<Token![mut]>,
-    pub ident: Ident,
-    pub _colon_token: Token![:],
-    pub ty: Type,
-    pub _eq_token: Token![=],
-    pub _expr: Expr,
-    pub _semi_token: Token![;],
-}
-
-impl Parse for ItemStatic {
-    fn parse(input: ParseStream) -> syn::Result<Self> {
-        Ok(ItemStatic {
-            _attrs: input.call(Attribute::parse_outer)?,
-            vis: input.parse()?,
-            _static_token: input.parse()?,
-            mutability: input.parse()?,
-            ident: input.parse()?,
-            _colon_token: input.parse()?,
-            ty: input.parse()?,
-            _eq_token: input.parse()?,
-            _expr: input.parse()?,
-            _semi_token: input.parse()?,
-        })
-    }
-}
+use proc_macro2::Span;
+use quote::{quote, format_ident, ToTokens};
+use syn::{parse_macro_input, DeriveInput, ItemStatic, StaticMutability, Ident, Type, Token, parse::Parse};
 
 
 #[proc_macro]
@@ -41,11 +10,11 @@ pub fn static_reference(mut input: TokenStream) -> TokenStream {
     let ItemStatic { ident, ty, mutability, vis, .. } = parse_macro_input!(cloned);
     let ref_name = format_ident!("{ident}Reference");
 
-    let result: TokenStream = if mutability.is_some() {
+    let result: TokenStream = if matches!(mutability, StaticMutability::Mut(_)) {
         quote! {
             #vis struct #ref_name;
 
-            impl bina_ecs::reference::MutStaticReference for #ref_name {
+            impl bina::ecs::reference::MutStaticReference for #ref_name {
                 type Type = #ty;
                 
                 unsafe fn get() -> &'static #ty {
@@ -60,7 +29,7 @@ pub fn static_reference(mut input: TokenStream) -> TokenStream {
         quote! {
             #vis struct #ref_name;
 
-            impl bina_ecs::reference::StaticReference for #ref_name {
+            impl bina::ecs::reference::StaticReference for #ref_name {
                 type Type = #ty;
 
                 fn get() -> &'static #ty {
@@ -75,23 +44,41 @@ pub fn static_reference(mut input: TokenStream) -> TokenStream {
     input
 }
 
-#[proc_macro_derive(Component)]
-pub fn derive_component(input: TokenStream) -> TokenStream {
-    let DeriveInput { ident, .. } = parse_macro_input!(input);
+#[proc_macro_attribute]
+pub fn component(attr: TokenStream, input: TokenStream) -> TokenStream {
+    if !attr.is_empty() {
+        return quote!{ compile_error!("component macro takes no attributes") }.into()
+    }
+
+    let cloned = input.clone();
+    let mut item_trait: syn::ItemImpl = parse_macro_input!(cloned);
+
+    let ident = item_trait.self_ty.to_token_stream();
     let static_name = format_ident!("_BINA_STORE_{ident}");
     let static_ref = format_ident!("_BINA_STORE_{ident}Reference");
 
-    quote! {
-        bina_macros::static_reference! {
-            static mut #static_name: bina_ecs::component::ComponentStore<#ident> = bina_ecs::component::ComponentStore::new();
-        }
+    item_trait.items.push({
+        syn::ImplItem::Type(
+            syn::ImplItemType {
+                attrs: vec![],
+                type_token: Default::default(),
+                ident: Ident::new("StoreRef", Span::call_site()),
+                generics: Default::default(),
+                ty: Type::Verbatim(static_ref.into_token_stream()),
+                semi_token: Default::default(),
+                vis: syn::Visibility::Inherited,
+                defaultness: Default::default(),
+                eq_token: Default::default(),
+            }
+        )
+    });
 
-        impl bina_ecs::component::Component for #ident {
-            type StoreRef = #static_ref;
+    let mut result: TokenStream = static_reference(quote! {
+        static #static_name: std::cell::SyncUnsafeCell<bina::ecs::component::ComponentStore<#ident>> = std::cell::SyncUnsafeCell::new(bina::ecs::component::ComponentStore::new());
+    }.into());
+    result.extend::<TokenStream>(item_trait.into_token_stream().into());
 
-
-        }
-    }.into()
+    result
 }
 
 #[proc_macro_derive(Singleton)]
@@ -99,12 +86,39 @@ pub fn derive_singleton(input: TokenStream) -> TokenStream {
     let DeriveInput { ident, .. } = parse_macro_input!(input);
 
     quote! {
-        impl bina_ecs::singleton::Singleton for #ident {
+        impl bina::ecs::singleton::Singleton for #ident {
             fn get() -> &'static Self {
                 use std::sync::OnceLock;
                 static STORE: OnceLock<#ident> = OnceLock::new();
                 STORE.get_or_init(Default::default)
             }
         }
+    }.into()
+}
+
+
+struct RegisterComponentArgs {
+    universe: Ident,
+    _comma: Token![,],
+    component: syn::TypePath
+}
+
+impl Parse for RegisterComponentArgs {
+    fn parse(input: syn::parse::ParseStream) -> syn::Result<Self> {
+        Ok(Self {
+            universe: input.parse()?,
+            _comma: input.parse()?,
+            component: input.parse()?
+        })
+    }
+}
+
+#[proc_macro]
+pub fn register_component(input: TokenStream) -> TokenStream {
+    let RegisterComponentArgs { universe, component, .. } = parse_macro_input!(input);
+
+    quote! {
+        impl bina::ecs::universe::RegisteredComponent for #component { }
+        #universe.register_component::<#component>();
     }.into()
 }
