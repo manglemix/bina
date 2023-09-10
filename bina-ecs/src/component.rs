@@ -37,7 +37,8 @@ pub struct ComponentStore<T: Component> {
     components_to_add: SegQueue<(T, Option<Arc<str>>)>,
     components_to_remove: SegQueue<usize>,
     ids_to_add: Mutex<ConstFxHashSet<Arc<str>>>,
-    process_locks: AtomicUsize
+    process_locks: AtomicUsize,
+    processor: T::Processor
 }
 
 
@@ -79,7 +80,8 @@ impl<T: Component> ComponentStore<T> {
             components_to_add: SegQueue::new(),
             components_to_remove: SegQueue::new(),
             ids_to_add: Mutex::new(new_fx_hashset()),
-            process_locks: AtomicUsize::new(0)
+            process_locks: AtomicUsize::new(0),
+            processor: <T::Processor as ComponentProcessor>::INIT
         }
     }
 
@@ -222,16 +224,22 @@ impl<T: Component> ComponentStore<T> {
     }
 
     /// Calls `process` on all components stored inside this store
-    pub(crate) fn process(&self, delta: f32, request_exit: &AtomicCell<Option<ExitCode>>) {
-        const CHUNK_SIZE: usize = 100;
+    pub(crate) unsafe fn process(delta: f32, request_exit: &AtomicCell<Option<ExitCode>>) {
+        let store_ptr = T::StoreRef::get().get();
 
-        self
-            .components_vec
+        let processor_offset = std::mem::offset_of!(Self, processor);
+        let processor_ptr: *mut T::Processor = store_ptr.cast::<u8>().add(processor_offset).cast();
+        let chunk_size = (*processor_ptr).get_chunk_size();
+        
+        let components_vec_offset = std::mem::offset_of!(Self, components_vec);
+        let components_vec_ptr: *const Vec<Mutex<T>> = store_ptr.cast::<u8>().add(components_vec_offset).cast();
+
+        (*components_vec_ptr)
             .as_slice()
-            .par_chunks(CHUNK_SIZE)
+            .par_chunks(chunk_size)
             .enumerate()
             .for_each(|(mut starting_i, chunk)| {
-                starting_i *= CHUNK_SIZE;
+                starting_i *= chunk_size;
 
                 for (mut _i, component) in chunk.into_iter().enumerate() {
                     _i += starting_i;
@@ -244,8 +252,28 @@ impl<T: Component> ComponentStore<T> {
 
 pub trait Component: Sized + Send + Sync + 'static {
     type StoreRef: StaticReference<Type=SyncUnsafeCell<ComponentStore<Self>>>;
+    type Processor: ComponentProcessor = DefaultComponentProcessor;
 
     fn process(self: Guard<ComponentRef<Self>>, _delta: f32, _utility: Utility) { }
+}
+
+
+pub struct DefaultComponentProcessor;
+
+
+pub trait ComponentProcessor {
+    const INIT: Self;
+
+    fn get_chunk_size(&mut self) -> usize;
+}
+
+
+impl ComponentProcessor for DefaultComponentProcessor {
+    const INIT: Self = Self;
+    
+    fn get_chunk_size(&mut self) -> usize {
+        100
+    }
 }
 
 

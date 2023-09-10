@@ -2,12 +2,13 @@
 // #![feature(downcast_unchecked)]
 #![feature(hash_extract_if)]
 #![feature(sync_unsafe_cell)]
-#![feature(option_get_or_insert_default)]
+// #![feature(option_get_or_insert_default)]
 #![feature(offset_of)]
 #![feature(const_collections_with_hasher)]
 #![feature(ptr_internals)]
 #![feature(arbitrary_self_types)]
 // #![feature(vec_push_within_capacity)]
+#![feature(associated_type_defaults)]
 
 use std::{collections::{HashMap, HashSet}, hash::BuildHasher};
 

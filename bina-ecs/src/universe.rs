@@ -3,7 +3,6 @@ use std::{time::Instant, process::ExitCode};
 use crate::{component::{Component, ComponentStore}, utility::Utility};
 use crossbeam::atomic::AtomicCell;
 use rayon::prelude::*;
-use crate::reference::StaticReference;
 
 
 // struct SafePtr<T: ?Sized>(*mut T);
@@ -45,9 +44,7 @@ impl Universe {
 
     pub fn register_component<T: RegisteredComponent>(&mut self) {
         self.vtables.push(VTable {
-            process: Box::new(|delta, request_exit| unsafe {
-                (*T::StoreRef::get().get()).process(delta, request_exit)
-            }),
+            process: Box::new(|delta, request_exit| unsafe { ComponentStore::<T>::process(delta, request_exit) }),
             flush: Box::new(|| unsafe { ComponentStore::<T>::flush() })
         });
     }
