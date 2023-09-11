@@ -1,13 +1,25 @@
-use std::{marker::Tuple, collections::BinaryHeap, ops::Deref};
+use std::{marker::Tuple, collections::BinaryHeap, ops::Deref, any::TypeId, mem::transmute};
 
 use crossbeam::{queue::SegQueue, atomic::AtomicCell};
 use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
-use triomphe::Arc;
+use triomphe::{Arc, UniqueArc};
 
 use crate::{component::{ComponentCombination, MaybeComponent}, universe::Universe};
 
-pub trait Entity: Tuple + Send + Sync + 'static {
-    fn process(&self, my_entity: EntityReference<()>, universe: &Universe);
+
+fn arr_to_arc<T: Copy, const N: usize>(arr: [T; N]) -> Arc<[T]> {
+    let mut arc = UniqueArc::new_uninit_slice(N);
+    for i in 0..N {
+        arc[i].write(arr[i]);
+    }
+    unsafe {
+        UniqueArc::assume_init_slice(arc).shareable()
+    }
+}
+
+
+pub trait Entity: Tuple + Send + Sync + Sized + 'static {
+    fn process(&self, my_index: usize, universe: &Universe);
     fn flush(&mut self);
 }
 
@@ -16,8 +28,8 @@ impl<A: MaybeComponent + ComponentCombination<(A,)>> Entity for (A,) {
         self.0.flush();
     }
 
-    fn process(&self, my_entity: EntityReference<()>, universe: &Universe) {
-        self.0.process((), my_entity, universe);
+    fn process(&self, my_index: usize, universe: &Universe) {
+        self.0.process(EntityReference { index: my_index, entity: self, ignore_ptrs: arr_to_arc([ref_to_usize(&self.0)]) }, universe);
     }
 }
 impl<
@@ -29,8 +41,13 @@ impl<
         rayon::join(|| self.0.flush(), || self.1.flush());
     }
 
-    fn process(&self, my_entity: EntityReference<()>, universe: &Universe) {
-        rayon::join(|| self.0.process((&self.1,), my_entity, universe), || self.1.process((&self.0,), my_entity, universe));
+    fn process(&self, my_index: usize, universe: &Universe) {
+        macro_rules! make_ref {
+            ($($index: tt) *) => {
+                EntityReference { index: my_index, entity: self, ignore_ptrs: arr_to_arc([$(ref_to_usize(&self.$index)),*]) }
+            };
+        }
+        rayon::join(|| self.0.process(make_ref!(0), universe), || self.1.process(make_ref!(1), universe));
     }
 }
 
@@ -92,10 +109,11 @@ impl MaybeEntity for () {}
 impl<E: Entity> MaybeEntity for E {}
 
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub struct EntityReference<'a, E: MaybeEntity> {
     pub(crate) index: usize,
-    entity: &'a E
+    entity: &'a E,
+    ignore_ptrs: Arc<[usize]>
 }
 
 
@@ -104,6 +122,106 @@ impl<'a, E: MaybeEntity> Deref for EntityReference<'a, E> {
 
     fn deref(&self) -> &Self::Target {
         self.entity
+    }
+}
+
+fn ref_to_usize<T>(reference: &T) -> usize {
+    std::ptr::from_ref(reference) as usize
+}
+
+impl<'a, E: Entity> EntityReference<'a, E> {
+    fn is_ref_ignored<T>(&self, reference: &T) -> bool {
+        self.ignore_ptrs.binary_search(&ref_to_usize(reference)).is_ok()
+    }
+}
+
+
+impl<'a, A> EntityReference<'a, (A,)>
+where
+    (A,): Entity
+{
+    pub fn get_component<T: 'static>(&self) -> Option<&T> {
+        if TypeId::of::<T>() == TypeId::of::<A>() {
+            if self.is_ref_ignored(&self.entity.0) {
+                None
+            } else {
+                Some(unsafe { transmute(&self.entity.0) })
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_components<T: 'static>(&self) -> Box<[&T]> {
+        if TypeId::of::<T>() == TypeId::of::<A>() {
+            if self.is_ref_ignored(&self.entity.0) {
+                [].into()
+            } else {
+                [unsafe { transmute(&self.entity.0) }].into()
+            }
+        } else {
+            [].into()
+        }
+    }
+}
+
+impl<'a, A, B> EntityReference<'a, (A, B)>
+where
+    (A, B): Entity
+{
+    pub fn get_component<T: 'static>(&self) -> Option<&T> {
+        if TypeId::of::<T>() == TypeId::of::<A>() {
+            if self.is_ref_ignored(&self.entity.0) {
+                None
+            } else {
+                Some(unsafe { transmute(&self.entity.0) })
+            }
+        } else if TypeId::of::<T>() == TypeId::of::<B>() {
+            if self.is_ref_ignored(&self.entity.1) {
+                None
+            } else {
+                Some(unsafe { transmute(&self.entity.1) })
+            }
+        } else {
+            None
+        }
+    }
+
+    pub fn get_components<T: 'static>(&self) -> Box<[&T]> {
+        unsafe {
+            if TypeId::of::<T>() == TypeId::of::<A>() {
+                if self.is_ref_ignored(&self.entity.0) {
+                    if TypeId::of::<T>() == TypeId::of::<B>() {
+                        if self.is_ref_ignored(&self.entity.1) {
+                            [].into()
+                        } else {
+                            [transmute(&self.entity.1)].into()
+                        }
+                    } else {
+                        [].into()
+                    }
+                } else {
+                    if TypeId::of::<T>() == TypeId::of::<B>() {
+                        if self.is_ref_ignored(&self.entity.1) {
+                            [transmute(&self.entity.0)].into()
+                        } else {
+                            [transmute(&self.entity.0), transmute(&self.entity.1)].into()
+                        }
+                    } else {
+                        [transmute(&self.entity.0)].into()
+                    }
+                }
+                
+            } else if TypeId::of::<T>() == TypeId::of::<B>() {
+                if self.is_ref_ignored(&self.entity.1) {
+                    [].into()
+                } else {
+                    [transmute(&self.entity.1)].into()
+                }
+            } else {
+                [].into()
+            }
+        }
     }
 }
 
@@ -194,7 +312,7 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
     }
 
     fn process(&self, universe: &Universe) {
-        self.buffer.par_iter().enumerate().for_each(|(index, x)| x.entity.process(EntityReference { index, entity: &() }, universe));
+        self.buffer.par_iter().enumerate().for_each(|(index, x)| x.entity.process(index, universe));
     }
 
     fn queue_remove_entity(&self, index: usize) {

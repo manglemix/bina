@@ -6,7 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-bina-ecs = { path = "../bina-ecs" }
+# bina-ecs = { path = "../bina-ecs" }
 quote = "1.0.*"
 syn = { version = "2.0.*", features = ["full"] }
 proc-macro2 = "1.0.*"

@@ -4,7 +4,8 @@ members = [
     'bina-ecs',
     'bina',
     'bina-macros',
-    'bina-app'
+    'bina-app',
+    'bina-graphics'
 ]
 
 [workspace.dependencies]

@@ -26,7 +26,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
                 let ty = &field.ty;
 
                 match path.to_token_stream().to_string().as_str() {
-                    "u8" | "u16" | "u32" | "u64" | "u128" | "i8" | "i16" | "i32" | "i64" | "i128" | "f32" | "f64" => {
+                    "u8" | "u16" | "u32" | "u64" | "u128" | "usize" | "i8" | "i16" | "i32" | "i64" | "i128" | "isize" | "f32" | "f64" => {
                         process_modifier_fields.push(ident);
                         new_struct_data.push(quote! { #ident: bina::ecs::component::NumberField<#ty>, });
                         quote! { #ident: bina::ecs::component::NumberFieldRef<'a, #ty>, }

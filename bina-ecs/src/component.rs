@@ -1,45 +1,11 @@
 use std::{
-    any::TypeId,
     marker::Tuple,
-    mem::transmute,
     ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign}, fmt::{Debug, Display},
 };
 
 use crossbeam::{atomic::AtomicCell, queue::SegQueue};
 
-use crate::{universe::Universe, entity::EntityReference};
-
-pub trait Siblings {
-    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T>;
-}
-
-impl Siblings for () {
-    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
-        None
-    }
-}
-
-impl<A: MaybeComponent> Siblings for (&A,) {
-    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
-        if TypeId::of::<T>() == TypeId::of::<A>() {
-            Some(unsafe { transmute(&self.0) })
-        } else {
-            None
-        }
-    }
-}
-
-impl<A: MaybeComponent, B: MaybeComponent> Siblings for (&A, &B) {
-    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
-        if TypeId::of::<T>() == TypeId::of::<A>() {
-            Some(unsafe { transmute(&self.0) })
-        } else if TypeId::of::<T>() == TypeId::of::<B>() {
-            Some(unsafe { transmute(&self.1) })
-        } else {
-            None
-        }
-    }
-}
+use crate::{universe::Universe, entity::{EntityReference, Entity}};
 
 pub trait Component: Send + Sync + 'static {
     type Reference<'a>;
@@ -49,13 +15,13 @@ pub trait Component: Send + Sync + 'static {
 }
 
 pub trait Processable: Component {
-    fn process<'a, S: Siblings>(component: Self::Reference<'a>, siblings: S, my_entity: EntityReference<'a, ()>, universe: &Universe);
+    fn process<E: Entity>(component: Self::Reference<'_>, my_entity: EntityReference<E>, universe: &Universe);
 }
 
 pub trait MaybeComponent: Send + Sync + 'static {
     type Reference<'a>;
 
-    fn process<S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe);
+    fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe);
     fn flush(&mut self);
 }
 
@@ -65,8 +31,8 @@ impl<T: Component + Processable> MaybeComponent for Option<T> {
         self.as_mut().map(|x| x.flush());
     }
 
-    fn process<'a, S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe) {
-        self.as_ref().map(|x| T::process(x.get_ref(), siblings, my_entity, universe));
+    fn process<'a, E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
+        self.as_ref().map(|x| T::process(x.get_ref(), my_entity, universe));
     }
 }
 impl<T: Component + Processable> MaybeComponent for T {
@@ -75,8 +41,8 @@ impl<T: Component + Processable> MaybeComponent for T {
         self.flush();
     }
 
-    fn process<S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe) {
-        T::process(self.get_ref(), siblings, my_entity, universe);
+    fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
+        T::process(self.get_ref(), my_entity, universe);
     }
 }
 
@@ -126,6 +92,9 @@ impl Number for u64 {
 impl Number for u128 {
     const IS_SIGNED: bool = false;
 }
+impl Number for usize {
+    const IS_SIGNED: bool = false;
+}
 
 impl Number for i8 {
     const IS_SIGNED: bool = true;
@@ -142,6 +111,10 @@ impl Number for i64 {
 impl Number for i128 {
     const IS_SIGNED: bool = true;
 }
+impl Number for isize {
+    const IS_SIGNED: bool = true;
+}
+
 
 impl Number for f32 {
     const IS_SIGNED: bool = true;
