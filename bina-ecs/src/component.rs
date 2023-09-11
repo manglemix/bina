@@ -2,12 +2,12 @@ use std::{
     any::TypeId,
     marker::Tuple,
     mem::transmute,
-    ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign},
+    ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign}, fmt::{Debug, Display},
 };
 
 use crossbeam::{atomic::AtomicCell, queue::SegQueue};
 
-use crate::universe::Universe;
+use crate::{universe::Universe, entity::EntityReference};
 
 pub trait Siblings {
     fn get_sibling<T: MaybeComponent>(&self) -> Option<&T>;
@@ -44,18 +44,18 @@ impl<A: MaybeComponent, B: MaybeComponent> Siblings for (&A, &B) {
 pub trait Component: Send + Sync + 'static {
     type Reference<'a>;
 
-    fn get_ref<'a>(&self) -> Self::Reference<'a>;
+    fn get_ref<'a>(&'a self) -> Self::Reference<'a>;
     fn flush(&mut self);
 }
 
 pub trait Processable: Component {
-    fn process<'a, S: Siblings>(component: Self::Reference<'a>, siblings: S, universe: &Universe);
+    fn process<'a, S: Siblings>(component: Self::Reference<'a>, siblings: S, my_entity: EntityReference<'a, ()>, universe: &Universe);
 }
 
 pub trait MaybeComponent: Send + Sync + 'static {
     type Reference<'a>;
 
-    fn process<S: Siblings>(&self, siblings: S, universe: &Universe);
+    fn process<S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe);
     fn flush(&mut self);
 }
 
@@ -65,8 +65,8 @@ impl<T: Component + Processable> MaybeComponent for Option<T> {
         self.as_mut().map(|x| x.flush());
     }
 
-    fn process<'a, S: Siblings>(&self, siblings: S, universe: &Universe) {
-        self.as_ref().map(|x| T::process(x.get_ref(), siblings, universe));
+    fn process<'a, S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe) {
+        self.as_ref().map(|x| T::process(x.get_ref(), siblings, my_entity, universe));
     }
 }
 impl<T: Component + Processable> MaybeComponent for T {
@@ -75,17 +75,14 @@ impl<T: Component + Processable> MaybeComponent for T {
         self.flush();
     }
 
-    fn process<S: Siblings>(&self, siblings: S, universe: &Universe) {
-        T::process(self.get_ref(), siblings, universe);
+    fn process<S: Siblings>(&self, siblings: S, my_entity: EntityReference<()>, universe: &Universe) {
+        T::process(self.get_ref(), siblings, my_entity, universe);
     }
 }
 
 pub trait ComponentCombination<CC: Tuple>: Send + 'static {}
 
 pub trait ComponentField {
-    // type Modifier;
-
-    // fn queue_modifier(&self, modifier: Self::Modifier);
     fn process_modifiers(&mut self);
 }
 
@@ -157,6 +154,28 @@ pub struct NumberField<T: Number> {
     number: T,
     modifier: AtomicCell<Option<NumberModifier<T>>>,
 }
+
+
+impl<T: Number> From<T> for NumberField<T> {
+    fn from(value: T) -> Self {
+        Self::new(value)
+    }
+}
+
+
+impl<T: Number + Debug> Debug for NumberField<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.number)
+    }
+}
+
+impl<T: Number + Display> Display for NumberField<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.number)
+    }
+}
+
+
 
 impl<T: Number> ComponentField for NumberField<T> {
     // type Modifier = NumberModifier<T>;
@@ -244,6 +263,7 @@ impl<T: Number> NumberField<T> {
     }
 }
 
+
 #[derive(Clone, Copy)]
 pub struct NumberFieldRef<'a, T: Number> {
     number: T,
@@ -275,11 +295,55 @@ impl<'a, T: Number> SubAssign<T> for NumberFieldRef<'a, T> {
     }
 }
 
+impl<'a, T: Number + PartialOrd> PartialOrd for NumberFieldRef<'a, T> {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        self.number.partial_cmp(&other.number)
+    }
+}
+
+impl<'a, T: Number + Ord> Ord for NumberFieldRef<'a, T> {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.number.cmp(&other.number)
+    }
+}
+
+impl<'a, T: Number + PartialEq> PartialEq for NumberFieldRef<'a, T> {
+    fn eq(&self, other: &Self) -> bool {
+        self.number == other.number
+    }
+}
+
+impl<'a, T: Number + Eq> Eq for NumberFieldRef<'a, T> { }
+
+impl<'a, T: Number + PartialOrd> PartialOrd<T> for NumberFieldRef<'a, T> {
+    fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {
+        self.number.partial_cmp(other)
+    }
+}
+
+impl<'a, T: Number + PartialEq> PartialEq<T> for NumberFieldRef<'a, T> {
+    fn eq(&self, other: &T) -> bool {
+        &self.number == other
+    }
+}
+
 impl<'a, T: Number> Deref for NumberFieldRef<'a, T> {
     type Target = T;
 
     fn deref(&self) -> &Self::Target {
         &self.number
+    }
+}
+
+impl<'a, T: Number + Debug> Debug for NumberFieldRef<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{:?}", self.number)
+    }
+}
+
+impl<'a, T: Number + Display> Display for NumberFieldRef<'a, T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.number)
     }
 }
 

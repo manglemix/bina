@@ -1,34 +1,39 @@
-#![feature(sync_unsafe_cell)]
-#![feature(arbitrary_self_types)]
-
-use std::any::Any;
+use std::error::Error;
 use std::fmt::Debug;
-use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use bina::ecs::entity::Entity;
+use bina::ecs::component::{ComponentCombination, Processable, Siblings};
+use bina::ecs::entity::EntityReference;
+use bina::ecs::universe::{Universe, LoopCount};
+use bina::macros::{derive_component};
 
-// use bina::ecs::component::{Component, ComponentRef};
-// use bina::ecs::locking::Guard;
-// use bina::ecs::universe::Universe;
-// use bina::ecs::utility::Utility;
-// use bina::macros::{component, register_component};
-
-#[derive(Debug)]
-struct Lmao {
-    runtime: f32,
+derive_component!{
+    #[derive(Debug)]
+    struct Lmao {
+        #[improve]
+        runtime: f64,
+    }
 }
 
-// #[component]
-// impl Component for Lmao {
-//     fn process(mut self: Guard<ComponentRef<Self>>, delta: f32, utility: Utility) {
-//         self.runtime += delta;
-//         if self.runtime > 3.0 {
-//             utility.request_exit(ExitCode::SUCCESS);
-//         }
-//         Guard::unlock(self);
-//         // std::thread::sleep(std::time::Duration::from_millis(10));
-//     }
-// }
 
-fn main() {}
+impl ComponentCombination<(Lmao,)> for Lmao {}
+
+impl Processable for Lmao {
+    fn process<'a, S: Siblings>(mut component: Self::Reference<'a>, _siblings: S, _my_entity: EntityReference<'a, ()>, universe: &Universe) {
+        component.runtime += universe.get_delta_accurate();
+        // println!("{}", component.runtime);
+        if component.runtime > 3.0 {
+            universe.exit_ok();
+        }
+    }
+}
+
+
+fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    let mut universe = Universe::default();
+    universe.queue_add_entity((Lmao { runtime: 0.0.into() },));
+    let start = Instant::now();
+    let result = universe.loop_many(LoopCount::Forever, Duration::ZERO).unwrap();
+    println!("{}", start.elapsed().as_secs_f32());
+    result
+}
