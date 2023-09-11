@@ -1,102 +1,86 @@
-use std::{time::Instant, process::ExitCode};
+use std::{any::TypeId, collections::hash_map::Entry, time::Duration};
 
-use crate::{component::{Component, ComponentStore}, utility::Utility};
-use crossbeam::atomic::AtomicCell;
-use rayon::prelude::*;
+use fxhash::FxHashMap;
+use parking_lot::Mutex;
+use rayon::prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+use spin_sleep::SpinSleeper;
 
-
-// struct SafePtr<T: ?Sized>(*mut T);
-
-
-// unsafe impl Sync for SafePtr<dyn GenericComponentStore> { }
-
-
-pub trait RegisteredComponent: Component { }
-
-
-struct VTable {
-    process: Box<dyn Fn(f32, &AtomicCell<Option<ExitCode>>) + Sync>,
-    flush: Box<dyn Fn() + Sync>
-}
-
-trait Lmao {
-
-}
+use crate::entity::{cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct};
 
 pub struct Universe {
-    vtables: Vec<VTable>,
-    fixed_delta: Option<f32>
+    entity_buffers: FxHashMap<TypeId, Box<dyn EntityBuffer>>,
+    pending_new_entity_buffers: Mutex<FxHashMap<TypeId, Box<dyn EntityBuffer>>>,
 }
 
-
 impl Universe {
-    pub fn new() -> Self {
-        Self {
-            vtables: Vec::new(),
-            fixed_delta: None
-        }
-    }
+    pub fn queue_add_entity<E: Entity>(&self, entity: E) {
+        let type_id = TypeId::of::<EntityBufferStruct<E>>();
+        let mut lock;
+        let entry;
 
-    pub fn with_fixed_delta(&mut self, delta: f32) -> &mut Self {
-        self.fixed_delta = Some(delta);
-        self
-    }
-
-    pub fn register_component<T: RegisteredComponent>(&mut self) {
-        self.vtables.push(VTable {
-            process: Box::new(|delta, request_exit| unsafe { ComponentStore::<T>::process(delta, request_exit) }),
-            flush: Box::new(|| unsafe { ComponentStore::<T>::flush() })
-        });
-    }
-
-    pub fn run_fn_once(&mut self, f: impl FnOnce(Utility)) -> Result<(), ExitCode> {
-        let request_exit = AtomicCell::new(None);
-        f(Utility::new(&request_exit));
-            
-        self
-            .vtables
-            .par_iter()
-            .for_each(|vtable| (vtable.flush)());
-
-        request_exit.into_inner().map(Err).unwrap_or(Ok(()))
-    }
-
-    pub fn run(self) -> ExitCode {
-        let request_exit = AtomicCell::new(None);
-
-        let iter = |delta| {
-            self
-                .vtables
-                .par_iter()
-                .for_each(|vtable| (vtable.process)(delta, &request_exit));
-            
-            self
-                .vtables
-                .par_iter()
-                .for_each(|vtable| (vtable.flush)());
+        let buffer = if let Some(buffer) = self.entity_buffers.get(&type_id) {
+            buffer
+        } else {
+            lock = self.pending_new_entity_buffers.lock();
+            match lock.entry(type_id) {
+                Entry::Occupied(x) => {
+                    entry = x;
+                    entry.get()
+                }
+                Entry::Vacant(x) => x.insert(Box::new(EntityBufferStruct::<E>::new())),
+            }
         };
 
-        if let Some(delta) = self.fixed_delta {
-            loop {
-                iter(delta);
-                unsafe {
-                    if let Some(code) = *request_exit.as_ptr() {
-                        return code
-                    }
+        let buffer: &EntityBufferStruct<E> = unsafe { cast_entity_buffer(&buffer) };
+        buffer.queue_add_entity(entity);
+    }
+
+    pub fn loop_once(&mut self) {
+        // Process all entities
+        self.entity_buffers
+            .par_iter()
+            .for_each(|(_, x)| x.process(self));
+
+        // Add new entity buffers
+        self.entity_buffers
+            .extend(self.pending_new_entity_buffers.get_mut().drain());
+
+        // Flush entity buffers
+        self.entity_buffers
+            .par_iter_mut()
+            .for_each(|(_, x)| x.flush());
+    }
+
+    pub fn loop_many(&mut self, count: LoopCount, min_delta: Duration) {
+        let LoopCount::Count(n) = count else {
+            if min_delta.is_zero() {
+                loop {
+                    self.loop_once();
+                }
+            } else {
+                let sleeper = SpinSleeper::default();
+                loop {
+                    self.loop_once();
+                    sleeper.sleep(min_delta);
                 }
             }
+        };
+
+        if min_delta.is_zero() {
+            for _i in 0..n {
+                self.loop_once();
+            }
         } else {
-            let mut last = Instant::now();
-            loop {
-                let delta = last.elapsed().as_secs_f32();
-                last = Instant::now();
-                iter(delta);
-                unsafe {
-                    if let Some(code) = *request_exit.as_ptr() {
-                        return code
-                    }
-                }
+            let sleeper = SpinSleeper::default();
+            for _i in 0..n {
+                self.loop_once();
+                sleeper.sleep(min_delta);
             }
         }
     }
+}
+
+pub enum LoopCount {
+    Forever,
+    Count(usize),
 }

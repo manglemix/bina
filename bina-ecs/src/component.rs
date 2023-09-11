@@ -1,288 +1,347 @@
-use std::{sync::atomic::{AtomicBool, Ordering, AtomicUsize}, marker::PhantomData, cell::SyncUnsafeCell, collections::BinaryHeap, ops::Deref, process::ExitCode};
+use std::{
+    any::TypeId,
+    marker::Tuple,
+    mem::transmute,
+    ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign},
+};
 
-use crossbeam::{queue::SegQueue, utils::Backoff, atomic::AtomicCell};
-use parking_lot::Mutex;
-use rayon::{slice::ParallelSlice, prelude::{ParallelIterator, IndexedParallelIterator}};
-use triomphe::Arc;
+use crossbeam::{atomic::AtomicCell, queue::SegQueue};
 
-use crate::{str::ToSharedString, utility::{Utility, ComponentsIter}, reference::StaticReference, locking::Guard, ConstFxHashMap, ConstFxHashSet, new_fx_hashmap, new_fx_hashset, bimap::BiMap};
+use crate::universe::Universe;
 
-
-#[derive(Clone)]
-pub struct ComponentRef<T: Component> {
-    pub(crate) component_index: usize,
-    freed: Arc<AtomicBool>,
-    _phantom: PhantomData<T>
+pub trait Siblings {
+    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T>;
 }
 
-
-impl<T: Component> ComponentRef<T> {
-    pub fn is_alive(&self) -> bool {
-        self.freed.load(Ordering::Acquire)
+impl Siblings for () {
+    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
+        None
     }
+}
 
-    pub fn queue_free(self) {
-        let lock = ComponentStore::<T>::get_process_lock();
-        if self.is_alive() {
-            lock.queue_free_component(self.component_index);
+impl<A: MaybeComponent> Siblings for (&A,) {
+    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
+        if TypeId::of::<T>() == TypeId::of::<A>() {
+            Some(unsafe { transmute(&self.0) })
+        } else {
+            None
         }
     }
 }
 
-
-pub struct ComponentStore<T: Component> {
-    components_vec: Vec<Mutex<T>>,
-    component_ids: BiMap<Arc<str>, usize>,
-    component_ids_freed: ConstFxHashMap<usize, Arc<AtomicBool>>,
-    components_to_add: SegQueue<(T, Option<Arc<str>>)>,
-    components_to_remove: SegQueue<usize>,
-    ids_to_add: Mutex<ConstFxHashSet<Arc<str>>>,
-    process_locks: AtomicUsize,
-    processor: T::Processor
-}
-
-
-const FLUSH_BIT: usize = 2usize.pow(usize::BITS - 1);
-
-pub(crate) struct ProcessLock<T: Component> {
-    _phantom: PhantomData<T>
-}
-
-
-impl<T: Component> Drop for ProcessLock<T> {
-    fn drop(&mut self) {
-        let process_locks_offset = std::mem::offset_of!(ComponentStore<T>, process_locks);
-        unsafe {
-            let ptr: *const AtomicUsize = *T::StoreRef::get().get().cast_const().cast::<u8>().add(process_locks_offset).cast();
-            (*ptr).fetch_sub(1, Ordering::Release);
+impl<A: MaybeComponent, B: MaybeComponent> Siblings for (&A, &B) {
+    fn get_sibling<T: MaybeComponent>(&self) -> Option<&T> {
+        if TypeId::of::<T>() == TypeId::of::<A>() {
+            Some(unsafe { transmute(&self.0) })
+        } else if TypeId::of::<T>() == TypeId::of::<B>() {
+            Some(unsafe { transmute(&self.1) })
+        } else {
+            None
         }
     }
 }
 
+pub trait Component: Send + Sync + 'static {
+    type Reference<'a>;
 
-impl<T: Component> Deref for ProcessLock<T> {
-    type Target = ComponentStore<T>;
+    fn get_ref<'a>(&self) -> Self::Reference<'a>;
+    fn flush(&mut self);
+}
+
+pub trait Processable: Component {
+    fn process<'a, S: Siblings>(component: Self::Reference<'a>, siblings: S, universe: &Universe);
+}
+
+pub trait MaybeComponent: Send + Sync + 'static {
+    type Reference<'a>;
+
+    fn process<S: Siblings>(&self, siblings: S, universe: &Universe);
+    fn flush(&mut self);
+}
+
+impl<T: Component + Processable> MaybeComponent for Option<T> {
+    type Reference<'a> = T::Reference<'a>;
+    fn flush(&mut self) {
+        self.as_mut().map(|x| x.flush());
+    }
+
+    fn process<'a, S: Siblings>(&self, siblings: S, universe: &Universe) {
+        self.as_ref().map(|x| T::process(x.get_ref(), siblings, universe));
+    }
+}
+impl<T: Component + Processable> MaybeComponent for T {
+    type Reference<'a> = T::Reference<'a>;
+    fn flush(&mut self) {
+        self.flush();
+    }
+
+    fn process<S: Siblings>(&self, siblings: S, universe: &Universe) {
+        T::process(self.get_ref(), siblings, universe);
+    }
+}
+
+pub trait ComponentCombination<CC: Tuple>: Send + 'static {}
+
+pub trait ComponentField {
+    // type Modifier;
+
+    // fn queue_modifier(&self, modifier: Self::Modifier);
+    fn process_modifiers(&mut self);
+}
+
+#[derive(Clone, Copy)]
+pub enum NumberModifier<T> {
+    Set(T),
+    Add(T),
+    Sub(T),
+    Mul(T),
+    Div(T),
+}
+
+pub trait Number:
+    std::ops::Add<Output = Self>
+    + AddAssign
+    + std::ops::Sub<Output = Self>
+    + SubAssign
+    + std::ops::Mul<Output = Self>
+    + MulAssign
+    + std::ops::Div<Output = Self>
+    + DivAssign
+    + PartialOrd
+    + Copy
+    + Sized
+{
+    const IS_SIGNED: bool;
+}
+
+impl Number for u8 {
+    const IS_SIGNED: bool = false;
+}
+impl Number for u16 {
+    const IS_SIGNED: bool = false;
+}
+impl Number for u32 {
+    const IS_SIGNED: bool = false;
+}
+impl Number for u64 {
+    const IS_SIGNED: bool = false;
+}
+impl Number for u128 {
+    const IS_SIGNED: bool = false;
+}
+
+impl Number for i8 {
+    const IS_SIGNED: bool = true;
+}
+impl Number for i16 {
+    const IS_SIGNED: bool = true;
+}
+impl Number for i32 {
+    const IS_SIGNED: bool = true;
+}
+impl Number for i64 {
+    const IS_SIGNED: bool = true;
+}
+impl Number for i128 {
+    const IS_SIGNED: bool = true;
+}
+
+impl Number for f32 {
+    const IS_SIGNED: bool = true;
+}
+impl Number for f64 {
+    const IS_SIGNED: bool = true;
+}
+
+pub struct NumberField<T: Number> {
+    number: T,
+    modifier: AtomicCell<Option<NumberModifier<T>>>,
+}
+
+impl<T: Number> ComponentField for NumberField<T> {
+    // type Modifier = NumberModifier<T>;
+
+    fn process_modifiers(&mut self) {
+        let Some(modifier) = std::mem::replace(&mut self.modifier, Default::default()).into_inner()
+        else {
+            return;
+        };
+        match modifier {
+            NumberModifier::Set(x) => self.number = x,
+            NumberModifier::Add(x) => self.number += x,
+            NumberModifier::Sub(x) => self.number -= x,
+            NumberModifier::Mul(x) => self.number *= x,
+            NumberModifier::Div(x) => self.number /= x,
+        }
+    }
+}
+
+impl<T: Number> NumberField<T> {
+    pub fn new(number: T) -> Self {
+        Self {
+            number,
+            modifier: AtomicCell::new(None),
+        }
+    }
+    pub fn get_ref(&self) -> NumberFieldRef<T> {
+        NumberFieldRef {
+            number: self.number,
+            reference: self,
+            set_performed: true,
+        }
+    }
+
+    fn queue_modifier(&self, modifier: NumberModifier<T>) {
+        let Some(self_modifier) = self.modifier.load() else {
+            self.modifier.store(Some(modifier));
+            return;
+        };
+        match modifier {
+            NumberModifier::Set(_) => self.modifier.store(Some(modifier)),
+            NumberModifier::Add(b) => match self_modifier {
+                NumberModifier::Add(a) => self.modifier.store(Some(NumberModifier::Add(a + b))),
+                NumberModifier::Sub(a) => {
+                    if a > b {
+                        self.modifier.store(Some(NumberModifier::Sub(a - b)));
+                    } else {
+                        self.modifier.store(Some(NumberModifier::Add(b - a)));
+                    }
+                }
+                _ => {}
+            },
+            NumberModifier::Sub(b) => match self_modifier {
+                NumberModifier::Add(a) => {
+                    if T::IS_SIGNED {
+                        self.modifier.store(Some(NumberModifier::Add(a - b)));
+                    } else if a > b {
+                        self.modifier.store(Some(NumberModifier::Add(a - b)));
+                    } else {
+                        self.modifier.store(Some(NumberModifier::Sub(b - a)));
+                    }
+                }
+                NumberModifier::Sub(a) => self.modifier.store(Some(NumberModifier::Sub(a + b))),
+                _ => {}
+            },
+            NumberModifier::Mul(_) => {
+                if matches!(
+                    self_modifier,
+                    NumberModifier::Set(_) | NumberModifier::Mul(_) | NumberModifier::Div(_)
+                ) {
+                    return;
+                }
+                todo!()
+            }
+            NumberModifier::Div(_) => {
+                if matches!(
+                    self_modifier,
+                    NumberModifier::Set(_) | NumberModifier::Mul(_) | NumberModifier::Div(_)
+                ) {
+                    return;
+                }
+                todo!()
+            }
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+pub struct NumberFieldRef<'a, T: Number> {
+    number: T,
+    reference: &'a NumberField<T>,
+    set_performed: bool,
+}
+
+impl<'a, T: Number> AddAssign<T> for NumberFieldRef<'a, T> {
+    fn add_assign(&mut self, rhs: T) {
+        self.number += rhs;
+        if self.set_performed {
+            self.reference
+                .queue_modifier(NumberModifier::Set(self.number));
+        } else {
+            self.reference.queue_modifier(NumberModifier::Add(rhs));
+        }
+    }
+}
+
+impl<'a, T: Number> SubAssign<T> for NumberFieldRef<'a, T> {
+    fn sub_assign(&mut self, rhs: T) {
+        self.number -= rhs;
+        if self.set_performed {
+            self.reference
+                .queue_modifier(NumberModifier::Set(self.number));
+        } else {
+            self.reference.queue_modifier(NumberModifier::Sub(rhs));
+        }
+    }
+}
+
+impl<'a, T: Number> Deref for NumberFieldRef<'a, T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
-        unsafe {
-            &*T::StoreRef::get().get()
+        &self.number
+    }
+}
+
+impl<'a, T: Number> NumberFieldRef<'a, T> {
+    pub fn set(&mut self, value: T) {
+        self.reference.queue_modifier(NumberModifier::Set(value));
+        self.set_performed = true;
+    }
+    pub fn get(&self) -> T {
+        self.number
+    }
+}
+
+pub struct StagedMutField<T> {
+    value: T,
+    modifiers: SegQueue<Box<dyn FnOnce(&mut T)>>,
+}
+
+impl<T> ComponentField for StagedMutField<T> {
+    fn process_modifiers(&mut self) {
+        while let Some(modifier) = self.modifiers.pop() {
+            modifier(&mut self.value);
         }
     }
 }
 
-
-impl<T: Component> ComponentStore<T> {
-    pub const fn new() -> Self {
-        Self {
-            components_vec: Vec::new(),
-            component_ids: BiMap::new(),
-            component_ids_freed: new_fx_hashmap(),
-            components_to_add: SegQueue::new(),
-            components_to_remove: SegQueue::new(),
-            ids_to_add: Mutex::new(new_fx_hashset()),
-            process_locks: AtomicUsize::new(0),
-            processor: <T::Processor as ComponentProcessor>::INIT
-        }
-    }
-
-    pub(crate) fn get_process_lock() -> ProcessLock<T> {
-        let store_ptr = T::StoreRef::get().get().cast_const();
-        let process_locks_offset = std::mem::offset_of!(Self, process_locks);
-        
-        unsafe {
-            let process_locks_ptr: *const AtomicUsize = store_ptr.cast::<u8>().add(process_locks_offset).cast();
-            let backoff = Backoff::new();
-            
-            loop {
-                // Try to lock
-                let locks = (*process_locks_ptr).fetch_add(1, Ordering::AcqRel);
-                // Presence of the flush bit means that we are already flushing
-                if locks >= FLUSH_BIT {
-                    (*process_locks_ptr).fetch_sub(1, Ordering::Release);
-                    // Snooze until the flush bit is gone, then try to lock again
-                    loop {
-                        backoff.snooze();
-                        if (*process_locks_ptr).load(Ordering::Acquire) < FLUSH_BIT {
-                            break
-                        }
-                    }
-                } else {
-                    break
-                }
-            }
-        }
-
-        return ProcessLock { _phantom: Default::default() }
-    }
-
-    pub(crate) fn queue_add_unnamed_component(&self, component: T) {
-        self.components_to_add.push((component, None));
-    }
-
-    pub(crate) fn queue_add_named_component(&self, component: T, id: impl ToSharedString) -> Result<(), T> {
-        let id = id.to_shared_string();
-        let mut set = self.ids_to_add.lock();
-        if set.contains(&id) {
-            return Err(component)
-        }
-        if self.component_ids.contains_left(&id) {
-            return Err(component)
-        }
-        set.insert(id.clone());
-        self.components_to_add.push((component, Some(id)));
-        Ok(())
-    }
-
-    pub(crate) fn queue_free_component(&self, index: usize) {
-        if index < self.components_vec.len() {
-            self.components_to_remove.push(index);
-        }
-    }
-
-    /// # Safety
-    /// 
-    /// Can only be called while not flushing
-    pub(crate) unsafe fn get_components(&self) -> ComponentsIter<T> {
-        todo!()
-    }
-
-    pub(crate) fn get_component(&self, name: &str) -> Option<ComponentRef<T>> {
-        let component_index = *self.component_ids.get_by_left(name)?;
-        let freed = unsafe {
-            self.component_ids_freed.get(&component_index).unwrap_unchecked().clone()
-        };
-        Some(ComponentRef { component_index, freed, _phantom: Default::default() })
-    }
-
-    pub(crate) fn get_component_by_idx(&self, idx: usize) -> Option<&Mutex<T>> {
-        self.components_vec.get(idx)
-    }
-
-    /// Processes all the pending queues of component adds or removes
-    /// 
-    /// This method blocks until `process` has finished, and then proceeds
-    /// to start flushing. Flushing is a very critical section as it requires
-    /// mutable access to the whole struct.
-    /// 
-    /// This method does not take mutable reference to the store as it is only
-    /// safe to do so once `process` has finished. Therefore, it watches the status
-    /// of the `process` method through a `const` pointer. Since all stores have a
-    /// pointer to themselves, this method does not need to take in any references.
-    /// 
-    /// # Safety
-    /// 
-    /// Only one call to `flush` for a specific store at a time. This method
-    /// can safely check if a `process` is running, but it cannot check if there
-    /// is another call to `flush` happening.
-    pub(crate) unsafe fn flush() {
-        let store = {
-            let ptr = T::StoreRef::get().get();
-            let const_ptr = ptr.cast_const();
-            let backoff = Backoff::new();
-            (*const_ptr).process_locks.fetch_add(FLUSH_BIT, Ordering::Release);
-
-            while (*const_ptr).process_locks.load(Ordering::Acquire) > FLUSH_BIT {
-                backoff.snooze();
-            }
-
-            debug_assert_eq!((*const_ptr).process_locks.load(Ordering::Acquire), FLUSH_BIT);
-            &mut *ptr
-        };
-
-        store.ids_to_add.get_mut().clear();
-
-        let mut indices = BinaryHeap::with_capacity(store.components_to_remove.len());
-        while let Some(i) = store.components_to_remove.pop() {
-            indices.push(i);
-        }
-
-        let mut last = usize::MAX;
-        for i in indices {
-            if i == last {
-                continue
-            }
-            last = i;
-            store.component_ids_freed.remove(&i).map(|b| b.store(true, Ordering::Release));
-            store.components_vec.swap_remove(i);
-            store.component_ids.remove_by_right(&i);
-        }
-
-        let additional = store.components_to_add.len();
-        store.components_vec.reserve(additional);
-        store.component_ids.reserve(additional);
-
-        while let Some((component, maybe_id)) = store.components_to_add.pop() {
-            if let Some(id) = maybe_id {
-                let i = store.components_vec.len();
-                store.component_ids.insert(id, i);
-                store.component_ids_freed.insert(i, Arc::new(AtomicBool::new(false)));
-            }
-            store.components_vec.push(component.into());
-        }
-
-        assert_eq!(store.process_locks.fetch_sub(FLUSH_BIT, Ordering::Release), FLUSH_BIT);
-    }
-
-    /// Calls `process` on all components stored inside this store
-    pub(crate) unsafe fn process(delta: f32, request_exit: &AtomicCell<Option<ExitCode>>) {
-        let store_ptr = T::StoreRef::get().get();
-
-        let processor_offset = std::mem::offset_of!(Self, processor);
-        let processor_ptr: *mut T::Processor = store_ptr.cast::<u8>().add(processor_offset).cast();
-        let chunk_size = (*processor_ptr).get_chunk_size();
-        
-        let components_vec_offset = std::mem::offset_of!(Self, components_vec);
-        let components_vec_ptr: *const Vec<Mutex<T>> = store_ptr.cast::<u8>().add(components_vec_offset).cast();
-
-        (*components_vec_ptr)
-            .as_slice()
-            .par_chunks(chunk_size)
-            .enumerate()
-            .for_each(|(mut starting_i, chunk)| {
-                starting_i *= chunk_size;
-
-                for (mut _i, component) in chunk.into_iter().enumerate() {
-                    _i += starting_i;
-                    T::process(Guard::from_mutex(component), delta, Utility::new(&request_exit));
-                }
-            });
-        }
+#[derive(Clone, Copy)]
+pub struct StagedMutFieldRef<'a, T> {
+    reference: &'a StagedMutField<T>,
 }
 
-
-pub trait Component: Sized + Send + Sync + 'static {
-    type StoreRef: StaticReference<Type=SyncUnsafeCell<ComponentStore<Self>>>;
-    type Processor: ComponentProcessor = DefaultComponentProcessor;
-
-    fn process(self: Guard<ComponentRef<Self>>, _delta: f32, _utility: Utility) { }
-}
-
-
-pub struct DefaultComponentProcessor;
-
-
-pub trait ComponentProcessor {
-    const INIT: Self;
-
-    fn get_chunk_size(&mut self) -> usize;
-}
-
-
-impl ComponentProcessor for DefaultComponentProcessor {
-    const INIT: Self = Self;
-    
-    fn get_chunk_size(&mut self) -> usize {
-        100
+impl<'a, T> StagedMutFieldRef<'a, T> {
+    pub fn queue_modifier(&self, modifier: impl FnOnce(&mut T) + 'static) {
+        self.reference.modifiers.push(Box::new(modifier));
     }
 }
 
+impl<'a, T> Deref for StagedMutFieldRef<'a, T> {
+    type Target = T;
 
-// struct ComponentItem<T: Component> {
-//     component: T,
-    
-// }
-
+    fn deref(&self) -> &Self::Target {
+        &self.reference.value
+    }
+}
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn add_u8() {
+        let mut num = NumberField::new(43u8);
+        {
+            let mut num_ref = num.get_ref();
+            num_ref += 2;
+        }
+        assert_eq!(num.number, 43);
+        {
+            let mut num_ref = num.get_ref();
+            num_ref.set(2);
+        }
+        num.process_modifiers();
+        assert_eq!(num.number, 2);
+    }
 }
