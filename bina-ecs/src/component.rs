@@ -1,11 +1,14 @@
 use std::{
-    marker::Tuple,
-    ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign}, fmt::{Debug, Display},
+    fmt::{Debug, Display},
+    ops::{AddAssign, Deref, DivAssign, MulAssign, SubAssign},
 };
 
 use crossbeam::{atomic::AtomicCell, queue::SegQueue};
 
-use crate::{universe::Universe, entity::{EntityReference, Entity}};
+use crate::{
+    entity::{Entity, EntityReference},
+    universe::Universe,
+};
 
 pub trait Component: Send + Sync + 'static {
     type Reference<'a>;
@@ -15,38 +18,43 @@ pub trait Component: Send + Sync + 'static {
 }
 
 pub trait Processable: Component {
-    fn process<E: Entity>(component: Self::Reference<'_>, my_entity: EntityReference<E>, universe: &Universe);
+    fn process<E: Entity>(
+        component: Self::Reference<'_>,
+        my_entity: EntityReference<E>,
+        universe: &Universe,
+    );
 }
 
-pub trait MaybeComponent: Send + Sync + 'static {
-    type Reference<'a>;
+// pub trait MaybeComponent: Send + Sync + 'static {
+//     type Reference<'a>;
 
-    fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe);
-    fn flush(&mut self);
-}
+//     fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe);
+//     fn flush(&mut self);
+// }
 
-impl<T: Component + Processable> MaybeComponent for Option<T> {
-    type Reference<'a> = T::Reference<'a>;
-    fn flush(&mut self) {
-        self.as_mut().map(|x| x.flush());
-    }
+// impl<T: Component + Processable> MaybeComponent for Option<T> {
+//     type Reference<'a> = T::Reference<'a>;
+//     fn flush(&mut self) {
+//         self.as_mut().map(|x| x.flush());
+//     }
 
-    fn process<'a, E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
-        self.as_ref().map(|x| T::process(x.get_ref(), my_entity, universe));
-    }
-}
-impl<T: Component + Processable> MaybeComponent for T {
-    type Reference<'a> = T::Reference<'a>;
-    fn flush(&mut self) {
-        self.flush();
-    }
+//     fn process<'a, E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
+//         self.as_ref()
+//             .map(|x| T::process(x.get_ref(), my_entity, universe));
+//     }
+// }
+// impl<T: Component + Processable> MaybeComponent for T {
+//     type Reference<'a> = T::Reference<'a>;
+//     fn flush(&mut self) {
+//         self.flush();
+//     }
 
-    fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
-        T::process(self.get_ref(), my_entity, universe);
-    }
-}
+//     fn process<E: Entity>(&self, my_entity: EntityReference<E>, universe: &Universe) {
+//         T::process(self.get_ref(), my_entity, universe);
+//     }
+// }
 
-pub trait ComponentCombination<CC: Tuple>: Send + 'static {}
+// pub trait ComponentCombination<CC: Tuple>: Send + 'static {}
 
 pub trait ComponentField {
     fn process_modifiers(&mut self);
@@ -115,7 +123,6 @@ impl Number for isize {
     const IS_SIGNED: bool = true;
 }
 
-
 impl Number for f32 {
     const IS_SIGNED: bool = true;
 }
@@ -128,13 +135,11 @@ pub struct NumberField<T: Number> {
     modifier: AtomicCell<Option<NumberModifier<T>>>,
 }
 
-
 impl<T: Number> From<T> for NumberField<T> {
     fn from(value: T) -> Self {
         Self::new(value)
     }
 }
-
 
 impl<T: Number + Debug> Debug for NumberField<T> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -147,8 +152,6 @@ impl<T: Number + Display> Display for NumberField<T> {
         write!(f, "{}", self.number)
     }
 }
-
-
 
 impl<T: Number> ComponentField for NumberField<T> {
     // type Modifier = NumberModifier<T>;
@@ -236,7 +239,6 @@ impl<T: Number> NumberField<T> {
     }
 }
 
-
 #[derive(Clone, Copy)]
 pub struct NumberFieldRef<'a, T: Number> {
     number: T,
@@ -286,7 +288,7 @@ impl<'a, T: Number + PartialEq> PartialEq for NumberFieldRef<'a, T> {
     }
 }
 
-impl<'a, T: Number + Eq> Eq for NumberFieldRef<'a, T> { }
+impl<'a, T: Number + Eq> Eq for NumberFieldRef<'a, T> {}
 
 impl<'a, T: Number + PartialOrd> PartialOrd<T> for NumberFieldRef<'a, T> {
     fn partial_cmp(&self, other: &T) -> Option<std::cmp::Ordering> {

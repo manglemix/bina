@@ -16,5 +16,6 @@ triomphe = "0.1"
 rand = { version = "0.8", features = ["small_rng"] }
 rand_core = "0.6"
 spin_sleep = "1.1"
-log = "0.4"
-dashmap = "5.5"
+log = { workspace = true }
+# dashmap = "5.5"
+tokio = { version = "1.32.0", features = ["rt-multi-thread", "fs", "io-util", "net", "macros", "sync", "parking_lot"] }

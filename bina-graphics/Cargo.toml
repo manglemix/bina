@@ -1,11 +1,15 @@
 [package]
-name = "bina"
+name = "bina-graphics"
 version = "0.1.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+wgpu = "0.17"
+image = "0.24"
+winit = "0.28"
 bina-ecs = { path = "../bina-ecs" }
-bina-graphics = { path = "../bina-graphics" }
-bina-macros = { path = "../bina-macros" }
+cgmath = "0.18"
+static_assertions = { workspace = true }
+log = { workspace = true }

@@ -1,42 +1,47 @@
-use std::{marker::Tuple, collections::BinaryHeap, ops::Deref, any::TypeId, mem::transmute};
+use std::{any::TypeId, collections::BinaryHeap, marker::Tuple, mem::transmute, ops::Deref};
 
-use crossbeam::{queue::SegQueue, atomic::AtomicCell};
-use rayon::prelude::{IntoParallelRefMutIterator, ParallelIterator, IndexedParallelIterator, IntoParallelRefIterator};
+use crossbeam::{atomic::AtomicCell, queue::SegQueue};
+use rayon::prelude::{
+    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+};
 use triomphe::{Arc, UniqueArc};
 
-use crate::{component::{ComponentCombination, MaybeComponent}, universe::Universe};
-
+use crate::{
+    component::{Component, Processable},
+    universe::Universe,
+};
 
 fn arr_to_arc<T: Copy, const N: usize>(arr: [T; N]) -> Arc<[T]> {
     let mut arc = UniqueArc::new_uninit_slice(N);
     for i in 0..N {
         arc[i].write(arr[i]);
     }
-    unsafe {
-        UniqueArc::assume_init_slice(arc).shareable()
-    }
+    unsafe { UniqueArc::assume_init_slice(arc).shareable() }
 }
-
 
 pub trait Entity: Tuple + Send + Sync + Sized + 'static {
     fn process(&self, my_index: usize, universe: &Universe);
     fn flush(&mut self);
 }
 
-impl<A: MaybeComponent + ComponentCombination<(A,)>> Entity for (A,) {
+impl<A: Component + Processable> Entity for (A,) {
     fn flush(&mut self) {
         self.0.flush();
     }
 
     fn process(&self, my_index: usize, universe: &Universe) {
-        self.0.process(EntityReference { index: my_index, entity: self, ignore_ptrs: arr_to_arc([ref_to_usize(&self.0)]) }, universe);
+        A::process(
+            self.0.get_ref(),
+            EntityReference {
+                index: my_index,
+                entity: self,
+                ignore_ptrs: arr_to_arc([ref_to_usize(&self.0)]),
+            },
+            universe,
+        );
     }
 }
-impl<
-        A: MaybeComponent + ComponentCombination<(A, B)>,
-        B: MaybeComponent + ComponentCombination<(A, B)>,
-    > Entity for (A, B)
-{
+impl<A: Component + Processable, B: Component + Processable> Entity for (A, B) {
     fn flush(&mut self) {
         rayon::join(|| self.0.flush(), || self.1.flush());
     }
@@ -47,7 +52,10 @@ impl<
                 EntityReference { index: my_index, entity: self, ignore_ptrs: arr_to_arc([$(ref_to_usize(&self.$index)),*]) }
             };
         }
-        rayon::join(|| self.0.process(make_ref!(0), universe), || self.1.process(make_ref!(1), universe));
+        rayon::join(
+            || A::process(self.0.get_ref(), make_ref!(0), universe),
+            || B::process(self.1.get_ref(), make_ref!(1), universe),
+        );
     }
 }
 
@@ -77,45 +85,38 @@ pub(crate) unsafe fn cast_entity_buffer<E: Entity>(
     &*ptr
 }
 
-
 #[derive(Clone, Copy)]
 enum EntityIndex {
     Moving,
     Alive(usize),
-    Freed
+    Freed,
 }
-
 
 struct EntityWrapper<E: Entity> {
     entity: E,
-    index: Arc<AtomicCell<EntityIndex>>
+    index: Arc<AtomicCell<EntityIndex>>,
 }
-
 
 impl<E: Entity> EntityWrapper<E> {
     fn new(entity: E, index: usize) -> Self {
         Self {
             entity,
-            index: Arc::new(AtomicCell::new(EntityIndex::Alive(index)))
+            index: Arc::new(AtomicCell::new(EntityIndex::Alive(index))),
         }
     }
 }
 
-
 pub trait MaybeEntity {}
-
 
 impl MaybeEntity for () {}
 impl<E: Entity> MaybeEntity for E {}
-
 
 #[derive(Clone)]
 pub struct EntityReference<'a, E: MaybeEntity> {
     pub(crate) index: usize,
     entity: &'a E,
-    ignore_ptrs: Arc<[usize]>
+    ignore_ptrs: Arc<[usize]>,
 }
-
 
 impl<'a, E: MaybeEntity> Deref for EntityReference<'a, E> {
     type Target = E;
@@ -131,14 +132,15 @@ fn ref_to_usize<T>(reference: &T) -> usize {
 
 impl<'a, E: Entity> EntityReference<'a, E> {
     fn is_ref_ignored<T>(&self, reference: &T) -> bool {
-        self.ignore_ptrs.binary_search(&ref_to_usize(reference)).is_ok()
+        self.ignore_ptrs
+            .binary_search(&ref_to_usize(reference))
+            .is_ok()
     }
 }
 
-
 impl<'a, A> EntityReference<'a, (A,)>
 where
-    (A,): Entity
+    (A,): Entity,
 {
     pub fn get_component<T: 'static>(&self) -> Option<&T> {
         if TypeId::of::<T>() == TypeId::of::<A>() {
@@ -167,7 +169,7 @@ where
 
 impl<'a, A, B> EntityReference<'a, (A, B)>
 where
-    (A, B): Entity
+    (A, B): Entity,
 {
     pub fn get_component<T: 'static>(&self) -> Option<&T> {
         if TypeId::of::<T>() == TypeId::of::<A>() {
@@ -211,7 +213,6 @@ where
                         [transmute(&self.entity.0)].into()
                     }
                 }
-                
             } else if TypeId::of::<T>() == TypeId::of::<B>() {
                 if self.is_ref_ignored(&self.entity.1) {
                     [].into()
@@ -225,14 +226,12 @@ where
     }
 }
 
-
 pub(crate) struct EntityBufferStruct<E: Entity> {
     buffer: Vec<EntityWrapper<E>>,
     pending_adds: SegQueue<E>,
     pending_removes: SegQueue<usize>,
-    remove_buffer: BinaryHeap<usize>
+    remove_buffer: BinaryHeap<usize>,
 }
-
 
 impl<E: Entity> EntityBufferStruct<E> {
     pub(crate) fn new() -> Self {
@@ -265,7 +264,7 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
         while let Some(index) = self.pending_removes.pop() {
             self.remove_buffer.push(index);
         }
-        
+
         // Because we remove in reverse order, and we never remove the
         // same index twice, we can safely remove entities without double
         // frees or accidentally removing the wrong entity
@@ -274,7 +273,7 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
         let mut last = None;
         for index in self.remove_buffer.drain_sorted() {
             if Some(index) == last {
-                continue
+                continue;
             }
             last = Some(index);
 
@@ -312,12 +311,15 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
     }
 
     fn process(&self, universe: &Universe) {
-        self.buffer.par_iter().enumerate().for_each(|(index, x)| x.entity.process(index, universe));
+        self.buffer
+            .par_iter()
+            .enumerate()
+            .for_each(|(index, x)| x.entity.process(index, universe));
     }
 
     fn queue_remove_entity(&self, index: usize) {
         if index >= self.buffer.len() {
-            return
+            return;
         }
         self.pending_removes.push(index);
     }

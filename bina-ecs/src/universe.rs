@@ -1,25 +1,58 @@
-use std::{any::{TypeId, Any}, time::{Duration, Instant}, error::Error, marker::PhantomData, ops::Deref, collections::hash_map::Entry};
+use std::{
+    any::{Any, TypeId},
+    collections::hash_map::Entry,
+    error::Error,
+    time::{Duration, Instant},
+};
 
 use crossbeam::atomic::AtomicCell;
-use dashmap::{DashMap, mapref::{one::Ref, self}};
-use fxhash::{FxHashMap, FxBuildHasher};
+use fxhash::FxHashMap;
 use parking_lot::Mutex;
-use rayon::prelude::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator, IndexedParallelIterator};
+use rayon::{
+    join,
+    prelude::{
+        IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+        ParallelIterator,
+    },
+};
 use spin_sleep::SpinSleeper;
+use tokio::runtime::Handle;
 
-use crate::entity::{cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference};
+use crate::entity::{
+    cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference,
+};
 
-#[derive(Default)]
 pub struct Universe {
     entity_buffers: FxHashMap<TypeId, Box<dyn EntityBuffer>>,
     pending_new_entity_buffers: Mutex<FxHashMap<TypeId, Box<dyn EntityBuffer>>>,
-    singletons: DashMap<TypeId, Box<dyn Any + Send + Sync>, FxBuildHasher>,
+
+    singletons: FxHashMap<TypeId, Box<dyn Any + Send + Sync>>,
+    pending_new_singletons: Mutex<FxHashMap<TypeId, Box<dyn Any + Send + Sync>>>,
+
     exit_result: AtomicCell<Option<Result<(), Box<dyn Error + Send + Sync>>>>,
+    async_handle: Handle,
     delta_accurate: f64,
-    delta: f32
+    delta: f32,
 }
 
 impl Universe {
+    /// Creates a new Universe that is ready for immediate use
+    ///
+    /// # Panics
+    /// Panics if called from a thread that does not have a tokio runtime
+    pub fn new() -> Self {
+        Self {
+            entity_buffers: Default::default(),
+            pending_new_entity_buffers: Default::default(),
+            singletons: Default::default(),
+            pending_new_singletons: Default::default(),
+            exit_result: Default::default(),
+            async_handle: Handle::current(),
+            delta_accurate: Default::default(),
+            delta: Default::default(),
+        }
+    }
+
     pub fn queue_add_entity<E: Entity>(&self, entity: E) {
         let type_id = TypeId::of::<EntityBufferStruct<E>>();
         let mut lock;
@@ -43,7 +76,8 @@ impl Universe {
     }
 
     pub fn iter_entities<E: Entity>(&self) -> Option<impl IndexedParallelIterator + '_> {
-        self.entity_buffers.get(&TypeId::of::<EntityBufferStruct<E>>())
+        self.entity_buffers
+            .get(&TypeId::of::<EntityBufferStruct<E>>())
             .map(|buffer| {
                 let buffer: &EntityBufferStruct<E> = unsafe { cast_entity_buffer(buffer) };
                 buffer.par_iter()
@@ -51,21 +85,38 @@ impl Universe {
     }
 
     pub fn queue_remove_entity<E: Entity>(&self, reference: EntityReference<E>) {
-        self.entity_buffers.get(&TypeId::of::<EntityBufferStruct<E>>())
-            .map(|buffer|
-                buffer.queue_remove_entity(reference.index)
-            );
+        self.entity_buffers
+            .get(&TypeId::of::<EntityBufferStruct<E>>())
+            .map(|buffer| buffer.queue_remove_entity(reference.index));
     }
 
-    pub fn get_singleton<T: Default + Send + Sync + 'static>(&self) -> Singleton<T> {
-        let type_id = TypeId::of::<T>();
-        let lock = self.singletons.get(&type_id).unwrap_or_else(|| {
-            match self.singletons.entry(type_id) {
-                mapref::entry::Entry::Occupied(x) => x.into_ref(),
-                mapref::entry::Entry::Vacant(x) => x.insert(Box::new(T::default())),
-            }.downgrade()
-        });
-        Singleton { lock, _phantom: PhantomData }
+    /// Gets a singleton
+    ///
+    /// # Panics
+    /// Panics if the singleton does not exist. Use `try_get_singleton` for a
+    /// non-panicking version
+    pub fn get_singleton<T: Send + Sync + 'static>(&self) -> &T {
+        self.try_get_singleton()
+            .expect("Singleton should be initialized")
+    }
+
+    /// Gets a singleton if it exists
+    pub fn try_get_singleton<T: Send + Sync + 'static>(&self) -> Option<&T> {
+        self.singletons
+            .get(&TypeId::of::<T>())
+            .map(|x| unsafe { x.downcast_ref_unchecked() })
+    }
+
+    /// Adds a new singleton, or overwrites and existing singleton
+    pub fn queue_set_singleton<T: Send + Sync + 'static>(&self, singleton: T) {
+        self.pending_new_singletons
+            .lock()
+            .insert(TypeId::of::<T>(), Box::new(singleton));
+    }
+
+    #[must_use = "Enter guard is only useful while not dropped"]
+    pub fn enter_tokio(&self) -> tokio::runtime::EnterGuard {
+        self.async_handle.enter()
     }
 
     pub fn exit_ok(&self) {
@@ -83,12 +134,21 @@ impl Universe {
             .for_each(|(_, x)| x.process(self));
 
         if let Some(result) = self.exit_result.take() {
-            return Some(result)
+            return Some(result);
         }
 
-        // Add new entity buffers
-        self.entity_buffers
-            .extend(self.pending_new_entity_buffers.get_mut().drain());
+        join(
+            // Add/replace singletons
+            || {
+                self.singletons
+                    .extend(self.pending_new_singletons.get_mut().drain())
+            },
+            // Add new entity buffers
+            || {
+                self.entity_buffers
+                    .extend(self.pending_new_entity_buffers.get_mut().drain())
+            },
+        );
 
         // Flush entity buffers
         self.entity_buffers
@@ -103,25 +163,28 @@ impl Universe {
     }
 
     pub fn get_delta_accurate(&self) -> f64 {
-         self.delta_accurate
+        self.delta_accurate
     }
 
-    pub fn loop_many(&mut self, count: LoopCount, delta: DeltaStrategy) -> Option<Result<(), Box<dyn Error + Send + Sync>>> {
+    pub fn loop_many(
+        &mut self,
+        count: LoopCount,
+        delta: DeltaStrategy,
+    ) -> Option<Result<(), Box<dyn Error + Send + Sync>>> {
         macro_rules! loop_once {
             () => {
                 if let Some(result) = self.loop_once() {
-                    return Some(result)
+                    return Some(result);
                 }
             };
         }
         let LoopCount::Count(n) = count else {
             match delta {
-                DeltaStrategy::FakeDelta(delta) =>
-                    loop {
-                        loop_once!();
-                        self.delta_accurate = delta.as_secs_f64();
-                        self.delta = delta.as_secs_f32();
-                    }
+                DeltaStrategy::FakeDelta(delta) => loop {
+                    loop_once!();
+                    self.delta_accurate = delta.as_secs_f64();
+                    self.delta = delta.as_secs_f32();
+                },
                 DeltaStrategy::RealDelta(delta) => {
                     let sleeper = SpinSleeper::default();
                     loop {
@@ -135,14 +198,14 @@ impl Universe {
             }
         };
 
-        
         match delta {
-            DeltaStrategy::FakeDelta(delta) =>
+            DeltaStrategy::FakeDelta(delta) => {
                 for _i in 0..n {
                     loop_once!();
                     self.delta_accurate = delta.as_secs_f64();
                     self.delta = delta.as_secs_f32();
                 }
+            }
             DeltaStrategy::RealDelta(delta) => {
                 let sleeper = SpinSleeper::default();
                 for _i in 0..n {
@@ -164,22 +227,7 @@ pub enum LoopCount {
     Count(usize),
 }
 
-
 pub enum DeltaStrategy {
     FakeDelta(Duration),
-    RealDelta(Duration)
-}
-
-pub struct Singleton<'a, T> {
-    lock: Ref<'a, TypeId, Box<dyn Any + Send + Sync + 'static>, FxBuildHasher>,
-    _phantom: PhantomData<&'a T>
-}
-
-
-impl<'a, T: 'static> Deref for Singleton<'a, T> {
-    type Target = T;
-
-    fn deref(&self) -> &Self::Target {
-        unsafe { self.lock.downcast_ref_unchecked() }
-    }
+    RealDelta(Duration),
 }

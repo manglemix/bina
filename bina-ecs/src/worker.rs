@@ -6,17 +6,16 @@ use triomphe::Arc;
 #[derive(PartialEq, Eq)]
 pub enum MutabilityAccess {
     /// Immutable access is required
-    /// 
+    ///
     /// The given usize represents the maximum number of threads
     /// allowed to access the resource at any given time
     Immutable(usize),
     /// Mutable access is required
-    /// 
+    ///
     /// This limits the number of threads accessing the resource to
     /// exactly one
-    Mutable
+    Mutable,
 }
-
 
 /// The result of an executed WorkerMessage
 pub enum ExecResult<T: WorkerMessage> {
@@ -25,19 +24,18 @@ pub enum ExecResult<T: WorkerMessage> {
     /// No result, but the task should continue
     None,
     /// The task should stop now
-    /// 
+    ///
     /// Keep in mind, if there are multiple tasks running, this
     /// will only stop one. You must keep sending this until they
     /// all stop
-    Close
+    Close,
 }
-
 
 pub trait WorkerMessage: Send + Sized + 'static {
     /// The value that is managed by the worker task(s)
     /// If `MUTABILITY_ACCESS` is set to `Mutable`, and your value is not `Sync`,
     /// consider using `Exclusive` to make it `Sync`
-    /// 
+    ///
     /// A WorkerValue that is `()` is valid and will allow for Workers that are "pure",
     /// meaning that these workers operate purely on received messages.
     /// You should first consider if your use-case is better suited for a message style system
@@ -56,18 +54,16 @@ pub trait WorkerMessage: Send + Sized + 'static {
     }
 }
 
-
 /// A Worker is a handle to one or more tasks that manage a single value
-/// 
+///
 /// This value could be a network socket or file. Whatever the case, this
 /// Worker makes it easy for you to run code that could slow down your process
 /// on another thread while still having robust control over it.
 pub struct Worker<T: WorkerMessage> {
     sender: channel::Sender<T>,
     receiver: channel::Receiver<T>,
-    requeued: SegQueue<T>
+    requeued: SegQueue<T>,
 }
-
 
 impl<T: WorkerMessage> Worker<T> {
     /// Spawns one or more tasks depending on the implementation of `T`
@@ -87,10 +83,10 @@ impl<T: WorkerMessage> Worker<T> {
                         let result = match msg.exec(&value) {
                             ExecResult::Some(x) => x,
                             ExecResult::None => continue,
-                            ExecResult::Close => break
+                            ExecResult::Close => break,
                         };
                         if worker_sender.send(result).is_err() {
-                            break
+                            break;
                         }
                     }
                 });
@@ -101,20 +97,24 @@ impl<T: WorkerMessage> Worker<T> {
                     let result = match msg.exec_mut(&mut value) {
                         ExecResult::Some(x) => x,
                         ExecResult::None => continue,
-                        ExecResult::Close => break
+                        ExecResult::Close => break,
                     };
                     if worker_sender.send(result).is_err() {
-                        break
+                        break;
                     }
                 }
             });
         }
-        
-        Self { sender: handle_sender, receiver: handler_receiver, requeued: SegQueue::default() }
+
+        Self {
+            sender: handle_sender,
+            receiver: handler_receiver,
+            requeued: SegQueue::default(),
+        }
     }
 
     /// Sends a message to the task(s)
-    /// 
+    ///
     /// Returns the message back to the sender if the task(s) has ended
     /// for whatever reason
     pub fn send(&self, msg: T) -> Option<T> {
@@ -122,18 +122,18 @@ impl<T: WorkerMessage> Worker<T> {
     }
 
     /// Receives a message from the task
-    /// 
+    ///
     /// There is no guarantee that received messages are in order.
     /// If a received message is not what one specific thread needs but could
     /// be of use to another, you can `requeue` the received message
-    /// 
+    ///
     /// Returns None if the task(s) has ended for whatever reason
     pub fn recv(&self) -> Option<T> {
         self.receiver.recv().ok().or_else(|| self.requeued.pop())
     }
 
     /// Requeue the given result so that it can be picked up by another thread
-    /// 
+    ///
     /// There is no guarantee that another thread will receive the message before
     /// this thread receives it again. This is generally more reliable when the number
     /// of messages is higher. Consider making every message useful regardless of which

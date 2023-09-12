@@ -9,6 +9,8 @@ members = [
 ]
 
 [workspace.dependencies]
+static_assertions = "1.1"
+log = "0.4"
 
 [profile.release]
 lto = "thin"
