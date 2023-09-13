@@ -3,6 +3,7 @@ use std::{
 };
 
 use bina_ecs::{
+    component::Component,
     crossbeam::atomic::AtomicCell,
     tokio::{
         self,
@@ -11,7 +12,7 @@ use bina_ecs::{
         sync::{RwLock, RwLockReadGuard, RwLockWriteGuard},
         time::Instant,
     },
-    universe::Universe, component::Component,
+    universe::Universe,
 };
 use image::{ImageBuffer, ImageFormat, Pixel, Rgba};
 use wgpu::BindGroup;
@@ -73,28 +74,31 @@ fn load_img<const W: u32, const H: u32>(graphics: &Graphics, img: &[u8]) -> Text
         depth_or_array_layers: 1,
     };
 
-    let texture = graphics.inner.device.create_texture(&wgpu::TextureDescriptor {
-        // All textures are stored as 3D, we represent our 2D texture
-        // by setting depth to 1.
-        size: texture_size,
-        mip_level_count: 1, // We'll talk about this a little later
-        sample_count: 1,
-        dimension: wgpu::TextureDimension::D2,
-        // Most images are stored using sRGB so we need to reflect that here.
-        format: wgpu::TextureFormat::Rgba8UnormSrgb,
-        // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
-        // COPY_DST means that we want to copy data to this texture
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-        label: Some("diffuse_texture"),
-        // This is the same as with the SurfaceConfig. It
-        // specifies what texture formats can be used to
-        // create TextureViews for this texture. The base
-        // texture format (Rgba8UnormSrgb in this case) is
-        // always supported. Note that using a different
-        // texture format is not supported on the WebGL2
-        // backend.
-        view_formats: &[],
-    });
+    let texture = graphics
+        .inner
+        .device
+        .create_texture(&wgpu::TextureDescriptor {
+            // All textures are stored as 3D, we represent our 2D texture
+            // by setting depth to 1.
+            size: texture_size,
+            mip_level_count: 1, // We'll talk about this a little later
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            // Most images are stored using sRGB so we need to reflect that here.
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            // TEXTURE_BINDING tells wgpu that we want to use this texture in shaders
+            // COPY_DST means that we want to copy data to this texture
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            label: Some("diffuse_texture"),
+            // This is the same as with the SurfaceConfig. It
+            // specifies what texture formats can be used to
+            // create TextureViews for this texture. The base
+            // texture format (Rgba8UnormSrgb in this case) is
+            // always supported. Note that using a different
+            // texture format is not supported on the WebGL2
+            // backend.
+            view_formats: &[],
+        });
 
     graphics.inner.queue.write_texture(
         // Tells wgpu where to copy the pixel data
@@ -116,15 +120,18 @@ fn load_img<const W: u32, const H: u32>(graphics: &Graphics, img: &[u8]) -> Text
     );
 
     let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-    let sampler = graphics.inner.device.create_sampler(&wgpu::SamplerDescriptor {
-        address_mode_u: wgpu::AddressMode::ClampToEdge,
-        address_mode_v: wgpu::AddressMode::ClampToEdge,
-        address_mode_w: wgpu::AddressMode::ClampToEdge,
-        mag_filter: wgpu::FilterMode::Linear,
-        min_filter: wgpu::FilterMode::Nearest,
-        mipmap_filter: wgpu::FilterMode::Nearest,
-        ..Default::default()
-    });
+    let sampler = graphics
+        .inner
+        .device
+        .create_sampler(&wgpu::SamplerDescriptor {
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Nearest,
+            mipmap_filter: wgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
 
     let bind_group = graphics
         .inner
@@ -178,11 +185,7 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
         }
     }
 
-    pub fn try_get(
-        &'static self,
-        universe: &Universe,
-        graphics: &Graphics,
-    ) -> Option<Texture> {
+    pub fn try_get(&'static self, universe: &Universe, graphics: &Graphics) -> Option<Texture> {
         // # Safety
         // The current texture must be processed
         let return_ref = |read: RwLockReadGuard<'static, MaybeTexture<Rgba<u8>>>| {
@@ -192,7 +195,7 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                 };
                 inner
             });
-            Some(Texture{ texture })
+            Some(Texture { texture })
         };
 
         let read = self.texture.try_read().ok()?;
@@ -205,7 +208,7 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                         // If it is not unloaded, and data source is raw,
                         // the only other possibility is that the texture is processed
                         let read = RwLockWriteGuard::downgrade(write);
-                        return return_ref(read)
+                        return return_ref(read);
                     };
                     let img = unsafe {
                         ImageBuffer::<Rgba<u8>, &[u8]>::from_raw(W, H, *data).unwrap_unchecked()
@@ -213,7 +216,7 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                     let inner = load_img::<W, H>(graphics, &img);
                     *write = MaybeTexture::Processed(inner);
                     let read = RwLockWriteGuard::downgrade(write);
-                    return return_ref(read)
+                    return return_ref(read);
                 }
 
                 let _guard = universe.enter_tokio();
@@ -285,13 +288,12 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                     });
                 }
 
-                return return_ref(read)
+                return return_ref(read);
             }
             MaybeTexture::Processed(_) => return return_ref(read),
         }
     }
 }
-
 
 impl Component for Texture {
     fn get_ref<'a>(&'a self) -> Self::Reference<'a> {

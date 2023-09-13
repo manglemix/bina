@@ -1,26 +1,29 @@
 use std::fmt::Debug;
+use std::sync::atomic::AtomicBool;
 use std::time::{Duration, Instant};
 
 use bina::ecs::component::Processable;
+use bina::ecs::crossbeam::atomic::AtomicCell;
 use bina::ecs::entity::EntityReference;
 use bina::ecs::tokio;
 use bina::ecs::universe::{DeltaStrategy, LoopCount, Universe};
+use bina::graphics::image::{ImageFormat, Rgba};
+use bina::graphics::polygon::{Polygon, TextureVertex};
+use bina::graphics::texture::{CacheOption, TextureResource};
 use bina::graphics::Graphics;
 use bina::macros::derive_component;
 
 derive_component! {
     #[derive(Debug)]
     struct Lmao {
+        start: AtomicCell<Instant>,
         #[improve]
         runtime: f64,
         #[improve]
         count: usize,
+        constructed: AtomicBool
     }
 }
-
-// load_image! {
-//     TEST = "test.jpg"
-// }
 
 impl Processable for Lmao {
     fn process<E: bina::ecs::entity::Entity>(
@@ -29,34 +32,78 @@ impl Processable for Lmao {
         universe: &Universe,
     ) {
         component.runtime += universe.get_delta_accurate();
+        if component.count == 0 {
+            component.start.store(Instant::now());
+        }
+        if !component
+            .constructed
+            .load(std::sync::atomic::Ordering::Relaxed)
+        {
+            let graphics = universe.get_singleton::<Graphics>();
+            if let Some(texture) = TEST_JPG.try_get(universe, graphics) {
+                universe.queue_add_entity((Polygon::new(
+                    graphics,
+                    &[
+                        TextureVertex {
+                            x: 0.0,
+                            y: 0.0,
+                            tx: 0.0,
+                            ty: 0.0,
+                        },
+                        TextureVertex {
+                            x: 1.0,
+                            y: 0.0,
+                            tx: 0.1,
+                            ty: 0.0,
+                        },
+                        // TextureVertex {
+                        //     x: 10.0,
+                        //     y: 10.0,
+                        //     tx: 10.0,
+                        //     ty: 10.0,
+                        // },
+                        TextureVertex {
+                            x: 0.0,
+                            y: 1.0,
+                            tx: 0.0,
+                            ty: 0.1,
+                        },
+                    ],
+                    bina::graphics::polygon::Material::Texture(texture),
+                ),))
+            }
+        }
         component.count += 1;
-        if component.runtime > 5.0 {
-            println!("{}", component.count);
+        if component.runtime > 15.0 {
             universe.exit_ok();
         }
     }
 }
 
+impl Drop for Lmao {
+    fn drop(&mut self) {
+        println!("{}", self.count);
+        println!("{}", self.start.load().elapsed().as_secs_f32());
+    }
+}
+
+static TEST_JPG: TextureResource<Rgba<u8>, 3060, 4080> =
+    unsafe { TextureResource::new_file("test.jpg", ImageFormat::Jpeg, CacheOption::CacheForever) };
+
 #[tokio::main]
 async fn main() {
-    let mut universe = Universe::new();
+    let universe = Universe::new();
     universe.queue_add_entity((Lmao {
+        start: AtomicCell::new(Instant::now()),
         runtime: 0.0.into(),
         count: 0.into(),
+        constructed: AtomicBool::new(false),
     },));
-    let x = TEST.to_image();
 
-    Graphics::run(move |graphics| {
-        universe.queue_set_singleton(graphics);
-        let start = Instant::now();
-        let result = universe
-            .loop_many(
-                LoopCount::Forever,
-                DeltaStrategy::RealDelta(Duration::from_millis(1)),
-            )
-            .unwrap();
-        println!("{}", start.elapsed().as_secs_f32());
-        result
-    })
+    Graphics::run(
+        universe,
+        LoopCount::Forever,
+        DeltaStrategy::RealDelta(Duration::from_millis(8)),
+    )
     .await;
 }

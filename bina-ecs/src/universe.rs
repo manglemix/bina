@@ -1,5 +1,5 @@
 use std::{
-    any::{Any, TypeId},
+    any::TypeId,
     collections::hash_map::Entry,
     error::Error,
     time::{Duration, Instant},
@@ -18,16 +18,17 @@ use rayon::{
 use spin_sleep::SpinSleeper;
 use tokio::runtime::Handle;
 
-use crate::entity::{
-    cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference,
+use crate::{
+    entity::{cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference},
+    singleton::Singleton,
 };
 
 pub struct Universe {
     entity_buffers: FxHashMap<TypeId, Box<dyn EntityBuffer>>,
     pending_new_entity_buffers: Mutex<FxHashMap<TypeId, Box<dyn EntityBuffer>>>,
 
-    singletons: FxHashMap<TypeId, Box<dyn Any + Send + Sync>>,
-    pending_new_singletons: Mutex<FxHashMap<TypeId, Box<dyn Any + Send + Sync>>>,
+    singletons: FxHashMap<TypeId, Box<dyn Singleton>>,
+    pending_new_singletons: Mutex<FxHashMap<TypeId, Box<dyn Singleton>>>,
 
     exit_result: AtomicCell<Option<Result<(), Box<dyn Error + Send + Sync>>>>,
     async_handle: Handle,
@@ -39,7 +40,8 @@ impl Universe {
     /// Creates a new Universe that is ready for immediate use
     ///
     /// # Panics
-    /// Panics if called from a thread that does not have a tokio runtime
+    /// Panics if called from outside a tokio runtime. The easiest
+    /// way to avoid this is to call this from inside an async method
     pub fn new() -> Self {
         Self {
             entity_buffers: Default::default(),
@@ -95,20 +97,21 @@ impl Universe {
     /// # Panics
     /// Panics if the singleton does not exist. Use `try_get_singleton` for a
     /// non-panicking version
-    pub fn get_singleton<T: Send + Sync + 'static>(&self) -> &T {
+    pub fn get_singleton<T: Singleton>(&self) -> &T {
         self.try_get_singleton()
             .expect("Singleton should be initialized")
     }
 
     /// Gets a singleton if it exists
-    pub fn try_get_singleton<T: Send + Sync + 'static>(&self) -> Option<&T> {
-        self.singletons
-            .get(&TypeId::of::<T>())
-            .map(|x| unsafe { x.downcast_ref_unchecked() })
+    pub fn try_get_singleton<T: Singleton>(&self) -> Option<&T> {
+        self.singletons.get(&TypeId::of::<T>()).map(|x| unsafe {
+            let ptr: *const T = x.get_void_ptr().cast();
+            &*ptr
+        })
     }
 
     /// Adds a new singleton, or overwrites and existing singleton
-    pub fn queue_set_singleton<T: Send + Sync + 'static>(&self, singleton: T) {
+    pub fn queue_set_singleton<T: Singleton>(&self, singleton: T) {
         self.pending_new_singletons
             .lock()
             .insert(TypeId::of::<T>(), Box::new(singleton));
@@ -128,14 +131,35 @@ impl Universe {
     }
 
     pub fn loop_once(&mut self) -> Option<Result<(), Box<dyn Error + Send + Sync>>> {
-        // Process all entities
-        self.entity_buffers
-            .par_iter()
-            .for_each(|(_, x)| x.process(self));
+        join(
+            // Process all entities
+            || {
+                self.entity_buffers
+                    .par_iter()
+                    .for_each(|(_, x)| x.process(self))
+            },
+            // Process all singletons
+            || {
+                self.singletons
+                    .par_iter()
+                    .for_each(|(_, x)| x.process(self))
+            },
+        );
 
         if let Some(result) = self.exit_result.take() {
             return Some(result);
         }
+
+        join(
+            // Flush entity buffers
+            || {
+                self.entity_buffers
+                    .par_iter_mut()
+                    .for_each(|(_, x)| x.flush())
+            },
+            // Flush singletons
+            || self.singletons.par_iter_mut().for_each(|(_, x)| x.flush()),
+        );
 
         join(
             // Add/replace singletons
@@ -149,11 +173,6 @@ impl Universe {
                     .extend(self.pending_new_entity_buffers.get_mut().drain())
             },
         );
-
-        // Flush entity buffers
-        self.entity_buffers
-            .par_iter_mut()
-            .for_each(|(_, x)| x.flush());
 
         None
     }
@@ -187,12 +206,15 @@ impl Universe {
                 },
                 DeltaStrategy::RealDelta(delta) => {
                     let sleeper = SpinSleeper::default();
+                    let start = Instant::now();
+                    let mut last_duration = Duration::ZERO;
                     loop {
-                        let start = Instant::now();
                         loop_once!();
-                        sleeper.sleep(delta.saturating_sub(start.elapsed()));
-                        self.delta_accurate = start.elapsed().as_secs_f64();
+                        sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
+                        let current_duration = start.elapsed();
+                        self.delta_accurate = (current_duration - last_duration).as_secs_f64();
                         self.delta = self.delta_accurate as f32;
+                        last_duration = current_duration
                     }
                 }
             }
@@ -208,12 +230,15 @@ impl Universe {
             }
             DeltaStrategy::RealDelta(delta) => {
                 let sleeper = SpinSleeper::default();
+                let start = Instant::now();
+                let mut last_duration = Duration::ZERO;
                 for _i in 0..n {
-                    let start = Instant::now();
                     loop_once!();
-                    sleeper.sleep(delta.saturating_sub(start.elapsed()));
-                    self.delta_accurate = start.elapsed().as_secs_f64();
+                    sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
+                    let current_duration = start.elapsed();
+                    self.delta_accurate = (current_duration - last_duration).as_secs_f64();
                     self.delta = self.delta_accurate as f32;
+                    last_duration = current_duration
                 }
             }
         }

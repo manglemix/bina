@@ -62,6 +62,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
             } else {
                 let ident = &field.ident;
                 let ty = &field.ty;
+                new_struct_data.push(quote! { #ident: #ty, });
                 quote! { #ident: &'a #ty, }
             }
         })
