@@ -11,10 +11,10 @@ use crate::{
 };
 
 pub trait Component: Send + Sync + 'static {
-    type Reference<'a>;
+    type Reference<'a> = &'a Self;
 
     fn get_ref<'a>(&'a self) -> Self::Reference<'a>;
-    fn flush(&mut self);
+    fn flush(&mut self) { }
 }
 
 pub trait Processable: Component {

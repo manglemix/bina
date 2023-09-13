@@ -1,20 +1,24 @@
 #![feature(associated_type_bounds)]
-use std::{error::Error, sync::OnceLock};
+use std::error::Error;
 
 use bina_ecs::{
     parking_lot::Mutex,
     rayon,
-    triomphe::{self, Arc},
+    triomphe::{self, Arc}, crossbeam::queue::{SegQueue, ArrayQueue},
 };
+use drawing::DrawInstruction;
+use polygon::{TEXTURE_VERTEX_BUFFER_DESCRIPTOR, Material};
+use wgpu::BindGroupLayout;
 use winit::{
     event::*,
     event_loop::{ControlFlow, EventLoop},
-    window::{Window, WindowBuilder},
+    window::{Window, WindowBuilder}, dpi::PhysicalSize,
 };
 
-pub mod raw_img;
 pub use image;
 pub mod texture;
+pub mod polygon;
+pub mod drawing;
 
 struct Config {
     config: wgpu::SurfaceConfiguration,
@@ -30,10 +34,20 @@ struct GraphicsInner {
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
     window: Window,
-    // render_pipeline: wgpu::RenderPipeline,
+    render_pipeline: wgpu::RenderPipeline,
+    texture_bind_group_layout: BindGroupLayout,
 }
 
-pub struct Graphics(triomphe::Arc<GraphicsInner>);
+
+const INSTRUCTION_VEC_BUFFER_SIZE: usize = 3;
+
+
+pub struct Graphics{
+    inner: triomphe::Arc<GraphicsInner>,
+    current_instructions_queue: SegQueue<DrawInstruction>,
+    filled_instructions_sender: Arc<ArrayQueue<Vec<DrawInstruction>>>,
+    empty_instructions_recv: Arc<ArrayQueue<Vec<DrawInstruction>>>
+}
 
 impl Graphics {
     /// Creates a new GUI immediately
@@ -105,51 +119,56 @@ impl Graphics {
         };
         surface.configure(&device, &config);
 
-        // let render_pipeline_layout =
-        //     device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-        //         label: Some("Render Pipeline Layout"),
-        //         bind_group_layouts: &[],
-        //         push_constant_ranges: &[],
-        //     });
-        // let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-        //     label: Some("Render Pipeline"),
-        //     layout: Some(&render_pipeline_layout),
-        //     vertex: wgpu::VertexState {
-        //         module: &shader,
-        //         entry_point: "vs_main", // 1.
-        //         buffers: &[],           // 2.
-        //     },
-        //     fragment: Some(wgpu::FragmentState {
-        //         // 3.
-        //         module: &shader,
-        //         entry_point: "fs_main",
-        //         targets: &[Some(wgpu::ColorTargetState {
-        //             // 4.
-        //             format: config.format,
-        //             blend: Some(wgpu::BlendState::REPLACE),
-        //             write_mask: wgpu::ColorWrites::ALL,
-        //         })],
-        //     }),
-        //     primitive: wgpu::PrimitiveState {
-        //         topology: wgpu::PrimitiveTopology::TriangleList, // 1.
-        //         strip_index_format: None,
-        //         front_face: wgpu::FrontFace::Ccw, // 2.
-        //         cull_mode: Some(wgpu::Face::Back),
-        //         // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-        //         polygon_mode: wgpu::PolygonMode::Fill,
-        //         // Requires Features::DEPTH_CLIP_CONTROL
-        //         unclipped_depth: false,
-        //         // Requires Features::CONSERVATIVE_RASTERIZATION
-        //         conservative: false,
-        //     },
-        //     depth_stencil: None, // 1.
-        //     multisample: wgpu::MultisampleState {
-        //         count: 1,                         // 2.
-        //         mask: !0,                         // 3.
-        //         alpha_to_coverage_enabled: false, // 4.
-        //     },
-        //     multiview: None,
-        // });
+        let render_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Render Pipeline Layout"),
+                bind_group_layouts: &[],
+                push_constant_ranges: &[],
+            });
+
+        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Render Pipeline"),
+            layout: Some(&render_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main", // 1.
+                buffers: &[
+                    TEXTURE_VERTEX_BUFFER_DESCRIPTOR
+                ],           // 2.
+            },
+            fragment: Some(wgpu::FragmentState {
+                // 3.
+                module: &shader,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    // 4.
+                    format: config.format,
+                    blend: Some(wgpu::BlendState::REPLACE),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw, // 2.
+                cull_mode: Some(wgpu::Face::Back),
+                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
+                polygon_mode: wgpu::PolygonMode::Fill,
+                // Requires Features::DEPTH_CLIP_CONTROL
+                unclipped_depth: false,
+                // Requires Features::CONSERVATIVE_RASTERIZATION
+                conservative: false,
+            },
+            depth_stencil: None, // 1.
+            multisample: wgpu::MultisampleState {
+                count: 1,                         // 2.
+                mask: !0,                         // 3.
+                alpha_to_coverage_enabled: false, // 4.
+            },
+            multiview: None,
+        });
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -175,35 +194,34 @@ impl Graphics {
                 label: Some("texture_bind_group_layout"),
             });
 
-        let diffuse_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &texture_bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&diffuse_texture_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&diffuse_sampler),
-                },
-            ],
-            label: Some("diffuse_bind_group"),
-        });
-
         let graphics = Arc::new(GraphicsInner {
             surface,
             device,
             queue,
             config: Mutex::new(Config { config, size }),
             window,
-            // render_pipeline,
+            render_pipeline,
+            texture_bind_group_layout
         });
 
         let cloned = graphics.clone();
         let (exit_sender, mut exit_receiver) = bina_ecs::tokio::sync::oneshot::channel();
+        let filled_instructions_sender = Arc::new(ArrayQueue::new(INSTRUCTION_VEC_BUFFER_SIZE));
+        let filled_instructions_receiver = filled_instructions_sender.clone();
+
+        let empty_instructions_sender = Arc::new(ArrayQueue::new(INSTRUCTION_VEC_BUFFER_SIZE));
+        for _i in 0..INSTRUCTION_VEC_BUFFER_SIZE {
+            unsafe { empty_instructions_sender.push(Vec::new()).unwrap_unchecked() }
+        }
+        let empty_instructions_recv = empty_instructions_sender.clone();
 
         rayon::spawn(move || {
-            f(Graphics(cloned)).unwrap();
+            f(Graphics{
+                inner: cloned,
+                filled_instructions_sender,
+                empty_instructions_recv,
+                current_instructions_queue: SegQueue::new()
+            }).unwrap();
             let _ = exit_sender.send(0);
         });
 
@@ -237,7 +255,8 @@ impl Graphics {
                                 label: Some("Render Encoder"),
                             });
 
-                    {
+                    let mut instructions = Vec::new();
+                    'render_pass: {
                         let mut render_pass =
                             encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                                 label: Some("Render Pass"),
@@ -260,37 +279,51 @@ impl Graphics {
                                 depth_stencil_attachment: None,
                             });
 
-                        // NEW!
-                        // render_pass.set_pipeline(&graphics.render_pipeline); // 2.
-                        // render_pass.draw(0..3, 0..1); // 3.
+                        render_pass.set_pipeline(&graphics.render_pipeline);
+                        let Some(tmp) = filled_instructions_receiver.pop() else { break 'render_pass };
+                        instructions = tmp;
+
+                        for instruction in &instructions {
+                            match instruction {
+                                DrawInstruction::DrawPolygon { polygon, origin: _origin } => {
+                                    if let Material::Texture(texture) = &polygon.inner.material {
+                                        render_pass.set_bind_group(0, &texture.texture.bind_group, &[]);
+                                    }
+                                    render_pass.set_vertex_buffer(0, polygon.inner.vertices.slice(..));
+                                    render_pass.draw(0..polygon.inner.vertex_count, 0..1);
+                                }
+                            }
+                        }
                     }
 
                     // submit will accept anything that implements IntoIter
                     graphics.queue.submit(std::iter::once(encoder.finish()));
                     output.present();
+                    if !instructions.is_empty() {
+                        instructions.clear();
+                        unsafe { empty_instructions_sender.push(instructions).unwrap_unchecked() };
+                    }
                 }
                 Event::WindowEvent {
                     ref event,
                     window_id,
                 } if window_id == graphics.window.id() => {
-                    macro_rules! resize {
-                        ($size: expr) => {
-                            if $size.width > 0 && $size.height > 0 {
-                                let mut lock = graphics.config.lock();
-                                lock.size = $size;
-                                lock.config.width = $size.width;
-                                lock.config.height = $size.height;
-                                graphics.surface.configure(&graphics.device, &lock.config);
-                            }
-                        };
-                    }
+                    let resize = |size: PhysicalSize<u32>| {
+                        if size.width > 0 && size.height > 0 {
+                            let mut lock = graphics.config.lock();
+                            lock.size = size;
+                            lock.config.width = size.width;
+                            lock.config.height = size.height;
+                            graphics.surface.configure(&graphics.device, &lock.config);
+                        }
+                    };
                     match event {
                         WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
                         WindowEvent::Resized(physical_size) => {
-                            resize!(*physical_size);
+                            resize(*physical_size);
                         }
                         WindowEvent::ScaleFactorChanged { new_inner_size, .. } => {
-                            resize!(**new_inner_size);
+                            resize(**new_inner_size);
                         }
                         WindowEvent::KeyboardInput { .. } => {}
                         _ => {}
@@ -299,5 +332,25 @@ impl Graphics {
                 _ => {}
             }
         });
+    }
+
+    pub(crate) fn queue_draw_instruction(&self, instruction: DrawInstruction) {
+        self.current_instructions_queue.push(instruction);
+    }
+
+    pub fn flush(&mut self) {
+        if self.current_instructions_queue.is_empty() {
+            return
+        }
+        let Some(mut vec) = self.empty_instructions_recv.pop() else {
+            // clear instructions
+            while let Some(_) = self.current_instructions_queue.pop() { }
+            return
+        };
+        vec.reserve(self.current_instructions_queue.len());
+        while let Some(instruction) = self.current_instructions_queue.pop() {
+            vec.push(instruction);
+        }
+        unsafe { self.filled_instructions_sender.push(vec).unwrap_unchecked() }
     }
 }

@@ -3,7 +3,8 @@
     downcast_unchecked,
     ptr_from_ref,
     sync_unsafe_cell,
-    binary_heap_drain_sorted
+    binary_heap_drain_sorted,
+    associated_type_defaults
 )]
 // #![feature(hash_extract_if)]
 // #![feature(option_get_or_insert_default)]

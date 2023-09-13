@@ -6,7 +6,7 @@ use bina::ecs::entity::EntityReference;
 use bina::ecs::tokio;
 use bina::ecs::universe::{DeltaStrategy, LoopCount, Universe};
 use bina::graphics::Graphics;
-use bina::macros::{derive_component, load_image};
+use bina::macros::derive_component;
 
 derive_component! {
     #[derive(Debug)]
@@ -18,9 +18,9 @@ derive_component! {
     }
 }
 
-load_image! {
-    TEST = "test.jpg"
-}
+// load_image! {
+//     TEST = "test.jpg"
+// }
 
 impl Processable for Lmao {
     fn process<E: bina::ecs::entity::Entity>(

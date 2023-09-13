@@ -13,3 +13,4 @@ bina-ecs = { path = "../bina-ecs" }
 cgmath = "0.18"
 static_assertions = { workspace = true }
 log = { workspace = true }
+bytemuck = { version = "1.12", features = [ "derive" ] }
