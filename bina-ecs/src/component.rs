@@ -22,7 +22,7 @@ pub trait Component: Send + Sync + 'static {
     fn get_ref<'a>(&'a self) -> Self::Reference<'a>;
 
     /// Mutates this component after the process frame ends
-    /// 
+    ///
     /// A reference to the entity that is storing this component is available,
     /// but this method will not be able to get any references to the other components
     /// in the entity as they will also be flushing
@@ -49,14 +49,9 @@ pub trait ComponentField {
 pub trait AtomicNumber: Copy + Sized {
     type Atomic;
 
-    fn new_atomic() -> Self::Atomic;
+    fn new_atomic(value: Self) -> Self::Atomic;
     fn load(atomic: &mut Self::Atomic) -> Self;
     fn store(atomic: &Self::Atomic, other: Self);
-
-    fn add_assign(&mut self, other: Self);
-    fn sub_assign(&mut self, other: Self);
-    fn mul_assign(&mut self, other: Self);
-    fn div_assign(&mut self, other: Self);
 
     fn atomic_add_assign(atomic: &Self::Atomic, other: Self);
     fn atomic_sub_assign(atomic: &Self::Atomic, other: Self);
@@ -66,8 +61,8 @@ pub trait AtomicNumber: Copy + Sized {
 
 macro_rules! impl_num {
     () => {
-        fn new_atomic() -> Self::Atomic {
-            Default::default()
+        fn new_atomic(value: Self) -> Self::Atomic {
+            value.into()
         }
 
         fn load(atomic: &mut Self::Atomic) -> Self {
@@ -92,22 +87,6 @@ macro_rules! impl_num {
 
         fn atomic_div_assign(atomic: &Self::Atomic, other: Self) {
             let _ = atomic.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x / other));
-        }
-
-        fn add_assign(&mut self, other: Self) {
-            *self = *self + other;
-        }
-
-        fn sub_assign(&mut self, other: Self) {
-            *self = *self - other;
-        }
-
-        fn mul_assign(&mut self, other: Self) {
-            *self = *self * other;
-        }
-
-        fn div_assign(&mut self, other: Self) {
-            *self = *self / other;
         }
     };
 }
@@ -174,10 +153,10 @@ impl AtomicNumber for f64 {
 impl<T: AtomicNumber, const N: usize> AtomicNumber for [T; N] {
     type Atomic = [T::Atomic; N];
 
-    fn new_atomic() -> Self::Atomic {
+    fn new_atomic(value: Self) -> Self::Atomic {
         let mut arr = MaybeUninit::uninit_array();
-        for mutref in &mut arr {
-            mutref.write(T::new_atomic());
+        for (i, mutref) in arr.iter_mut().enumerate() {
+            mutref.write(T::new_atomic(value[i]));
         }
         unsafe { MaybeUninit::array_assume_init(arr) }
     }
@@ -193,30 +172,6 @@ impl<T: AtomicNumber, const N: usize> AtomicNumber for [T; N] {
     fn store(atomic: &Self::Atomic, other: Self) {
         for (i, atomic) in atomic.iter().enumerate() {
             T::store(atomic, other[i]);
-        }
-    }
-
-    fn add_assign(&mut self, other: Self) {
-        for (i, mutref) in self.iter_mut().enumerate() {
-            T::add_assign(mutref, other[i]);
-        }
-    }
-
-    fn sub_assign(&mut self, other: Self) {
-        for (i, mutref) in self.iter_mut().enumerate() {
-            T::sub_assign(mutref, other[i]);
-        }
-    }
-
-    fn mul_assign(&mut self, other: Self) {
-        for (i, mutref) in self.iter_mut().enumerate() {
-            T::mul_assign(mutref, other[i]);
-        }
-    }
-
-    fn div_assign(&mut self, other: Self) {
-        for (i, mutref) in self.iter_mut().enumerate() {
-            T::div_assign(mutref, other[i]);
         }
     }
 
@@ -250,6 +205,15 @@ pub struct NumberField<T: AtomicNumber> {
     new_number: T::Atomic,
 }
 
+impl<T: AtomicNumber> Clone for NumberField<T> {
+    fn clone(&self) -> Self {
+        Self {
+            number: self.number,
+            new_number: T::new_atomic(self.number),
+        }
+    }
+}
+
 impl<T: AtomicNumber> From<T> for NumberField<T> {
     fn from(value: T) -> Self {
         Self::new(value)
@@ -278,7 +242,7 @@ impl<T: AtomicNumber> NumberField<T> {
     pub fn new(number: T) -> Self {
         Self {
             number,
-            new_number: T::new_atomic(),
+            new_number: T::new_atomic(number),
         }
     }
 
@@ -289,6 +253,10 @@ impl<T: AtomicNumber> NumberField<T> {
             // set_performed: true,
         }
     }
+
+    pub fn get_inner(&self) -> T {
+        self.number
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -298,9 +266,9 @@ pub struct NumberFieldRef<'a, T: AtomicNumber> {
     // set_performed: bool,
 }
 
-impl<'a, T: AtomicNumber> AddAssign<T> for NumberFieldRef<'a, T> {
+impl<'a, T: AtomicNumber + AddAssign> AddAssign<T> for NumberFieldRef<'a, T> {
     fn add_assign(&mut self, rhs: T) {
-        T::add_assign(&mut self.number, rhs);
+        self.number += rhs;
         <T as AtomicNumber>::atomic_add_assign(&self.reference.new_number, rhs);
         // if self.set_performed {
         //     self.reference
@@ -311,9 +279,9 @@ impl<'a, T: AtomicNumber> AddAssign<T> for NumberFieldRef<'a, T> {
     }
 }
 
-impl<'a, T: AtomicNumber> SubAssign<T> for NumberFieldRef<'a, T> {
+impl<'a, T: AtomicNumber + SubAssign> SubAssign<T> for NumberFieldRef<'a, T> {
     fn sub_assign(&mut self, rhs: T) {
-        T::sub_assign(&mut self.number, rhs);
+        self.number -= rhs;
         <T as AtomicNumber>::atomic_sub_assign(&self.reference.new_number, rhs);
     }
 }

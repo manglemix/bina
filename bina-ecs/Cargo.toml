@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 rayon = "1.7"
-fxhash = "0.2"
+fxhash = { workspace = true }
 parking_lot = "0.12"
 # delegate = "0.10"
 # bimap = "0.6"

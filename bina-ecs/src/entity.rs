@@ -1,14 +1,17 @@
 use std::{
     any::TypeId,
-    collections::BinaryHeap,
     marker::{PhantomData, Tuple},
     mem::transmute,
     ops::Deref,
 };
 
 use crossbeam::{atomic::AtomicCell, queue::SegQueue};
-use rayon::prelude::{
-    IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+use rayon::{
+    prelude::{
+        IndexedParallelIterator, IntoParallelRefIterator, IntoParallelRefMutIterator,
+        ParallelIterator,
+    },
+    slice::ParallelSliceMut,
 };
 use triomphe::{Arc, UniqueArc};
 
@@ -280,7 +283,7 @@ pub(crate) struct EntityBufferStruct<E: Entity> {
     buffer: Vec<EntityWrapper<E>>,
     pending_adds: SegQueue<E>,
     pending_removes: SegQueue<usize>,
-    remove_buffer: BinaryHeap<usize>,
+    remove_buffer: Vec<usize>,
 }
 
 impl<E: Entity> EntityBufferStruct<E> {
@@ -318,13 +321,15 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
             self.remove_buffer.push(index);
         }
 
+        self.remove_buffer.par_sort_unstable();
+
         // Because we remove in reverse order, and we never remove the
         // same index twice, we can safely remove entities without double
         // frees or accidentally removing the wrong entity
         // There is also a guard in the queue_remote_entity that ignores
         // indices out of range
         let mut last = None;
-        for index in self.remove_buffer.drain_sorted() {
+        while let Some(index) = self.remove_buffer.pop() {
             if Some(index) == last {
                 continue;
             }

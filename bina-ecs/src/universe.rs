@@ -56,7 +56,7 @@ pub struct Universe {
 
 impl Universe {
     /// Creates a new Universe that is ready for immediate use
-    /// 
+    ///
     /// If called from within a tokio runtime, a handle to the runtime
     /// will be stored
     pub fn new() -> Self {
@@ -144,7 +144,7 @@ impl Universe {
 
     /// If this universe was initialized without a tokio runtime,
     /// one can be added with this method
-    /// 
+    ///
     /// # Panics
     /// This will panic if called outside of a tokio runtime
     pub fn init_tokio(&mut self) {
@@ -248,16 +248,26 @@ impl Universe {
                     self.delta = delta.as_secs_f32();
                 },
                 DeltaStrategy::RealDelta(delta) => {
-                    let sleeper = SpinSleeper::default();
                     let start = Instant::now();
                     let mut last_duration = Duration::ZERO;
-                    loop {
-                        loop_once!();
-                        sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
-                        let current_duration = start.elapsed();
-                        self.delta_accurate = (current_duration - last_duration).as_secs_f64();
-                        self.delta = self.delta_accurate as f32;
-                        last_duration = current_duration
+                    if delta.is_zero() {
+                        loop {
+                            loop_once!();
+                            let current_duration = start.elapsed();
+                            self.delta_accurate = (current_duration - last_duration).as_secs_f64();
+                            self.delta = self.delta_accurate as f32;
+                            last_duration = current_duration
+                        }
+                    } else {
+                        let sleeper = SpinSleeper::default();
+                        loop {
+                            loop_once!();
+                            sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
+                            let current_duration = start.elapsed();
+                            self.delta_accurate = (current_duration - last_duration).as_secs_f64();
+                            self.delta = self.delta_accurate as f32;
+                            last_duration = current_duration
+                        }
                     }
                 }
             }
@@ -272,16 +282,26 @@ impl Universe {
                 }
             }
             DeltaStrategy::RealDelta(delta) => {
-                let sleeper = SpinSleeper::default();
                 let start = Instant::now();
                 let mut last_duration = Duration::ZERO;
-                for _i in 0..n {
-                    loop_once!();
-                    sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
-                    let current_duration = start.elapsed();
-                    self.delta_accurate = (current_duration - last_duration).as_secs_f64();
-                    self.delta = self.delta_accurate as f32;
-                    last_duration = current_duration
+                if delta.is_zero() {
+                    for _i in 0..n {
+                        loop_once!();
+                        let current_duration = start.elapsed();
+                        self.delta_accurate = (current_duration - last_duration).as_secs_f64();
+                        self.delta = self.delta_accurate as f32;
+                        last_duration = current_duration
+                    }
+                } else {
+                    let sleeper = SpinSleeper::default();
+                    for _i in 0..n {
+                        loop_once!();
+                        sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
+                        let current_duration = start.elapsed();
+                        self.delta_accurate = (current_duration - last_duration).as_secs_f64();
+                        self.delta = self.delta_accurate as f32;
+                        last_duration = current_duration
+                    }
                 }
             }
         }

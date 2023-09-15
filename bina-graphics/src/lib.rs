@@ -1,4 +1,4 @@
-#![feature(associated_type_bounds, exclusive_wrapper)]
+#![feature(associated_type_bounds, exclusive_wrapper, let_chains)]
 use std::sync::{mpsc::Receiver, Exclusive};
 
 use bina_ecs::{
@@ -9,8 +9,8 @@ use bina_ecs::{
     triomphe::{self, Arc},
     universe::{DeltaStrategy, LoopCount, Universe},
 };
-use drawing::DrawInstruction;
-use polygon::{Material, TextureVertex};
+use drawing::{DrawInstruction, Renderer};
+use polygon::TextureVertex;
 use wgpu::BindGroupLayout;
 use winit::{
     dpi::PhysicalSize,
@@ -51,11 +51,11 @@ pub struct Graphics {
 
 impl Graphics {
     /// Creates a new GUI immediately
-    /// 
+    ///
     /// To avoid issues with cross compatability, the window's event loop must
     /// use the main thread. This method ensures that is true while running the Universe
     /// loop in a separate thread.
-    /// 
+    ///
     /// Even though this function never returns, the universe will be safely dropped if a
     /// component has requested an exit, even if an exit with an error was requested. Any data
     /// not stored in the Universe will not be dropped however
@@ -119,7 +119,7 @@ impl Graphics {
             format: surface_format,
             width: size.width,
             height: size.height,
-            present_mode: surface_caps.present_modes[0],
+            present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
         };
@@ -234,6 +234,8 @@ impl Graphics {
             let _ = exit_sender.send(0);
         });
 
+        let mut renderer = Renderer::new();
+
         event_loop.run(move |event, _, control_flow| {
             match event {
                 Event::MainEventsCleared => {
@@ -269,64 +271,15 @@ impl Graphics {
                                 label: Some("Render Encoder"),
                             });
 
-                    {
-                        let mut render_pass =
-                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                                label: Some("Render Pass"),
-                                color_attachments: &[
-                                    // This is what @location(0) in the fragment shader targets
-                                    Some(wgpu::RenderPassColorAttachment {
-                                        view: &view,
-                                        resolve_target: None,
-                                        ops: wgpu::Operations {
-                                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                                r: 0.0,
-                                                g: 0.0,
-                                                b: 0.0,
-                                                a: 1.0,
-                                            }),
-                                            store: true,
-                                        },
-                                    }),
-                                ],
-                                depth_stencil_attachment: None,
-                            });
-
-                        render_pass.set_pipeline(&render_pipeline);
-
-                        for instruction in &instructions {
-                            match instruction {
-                                DrawInstruction::DrawPolygon {
-                                    polygon,
-                                    origin: _origin,
-                                } => {
-                                    if let Material::Texture(texture) = &polygon.inner.material {
-                                        render_pass.set_bind_group(
-                                            0,
-                                            &texture.texture.bind_group,
-                                            &[],
-                                        );
-                                    }
-                                    render_pass
-                                        .set_vertex_buffer(0, polygon.inner.vertices.slice(..));
-                                    render_pass
-                                        .set_index_buffer(polygon.inner.indices.slice(..), wgpu::IndexFormat::Uint32);
-                                    render_pass.draw_indexed(0..polygon.inner.indices_count, 0, 0..1);
-                                }
-                            }
-                        }
-                    }
+                    renderer.draw_all(&mut encoder, &view, &render_pipeline, &mut instructions);
 
                     // submit will accept anything that implements IntoIter
                     graphics.queue.submit(std::iter::once(encoder.finish()));
                     output.present();
-                    if !instructions.is_empty() {
-                        instructions.clear();
-                        unsafe {
-                            empty_instructions_sender
-                                .send(instructions)
-                                .unwrap_unchecked()
-                        };
+                    unsafe {
+                        empty_instructions_sender
+                            .send(instructions)
+                            .unwrap_unchecked()
                     }
                 }
                 Event::WindowEvent {

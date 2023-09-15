@@ -260,7 +260,7 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                                 // then the texture is still being used
                                 if let Ok(tmp) = self.texture.try_write() {
                                     write = tmp;
-                                    break
+                                    break;
                                 }
                             }
                             last_instant = current_instant;

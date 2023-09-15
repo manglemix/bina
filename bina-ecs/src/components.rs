@@ -19,7 +19,7 @@ enum FutureValue<T> {
 
 /// Represents a handle to a `Future` that can be checked
 /// for completion
-/// 
+///
 /// When the `Future` completes and the output is taken,
 /// the entity with which this handle is a component of will
 /// be deleted!
@@ -84,7 +84,7 @@ impl<T: Send + Sync + 'static> WatchedFuture<T> {
     }
 
     /// Attempt to get the output of a `Future` if it is done
-    /// 
+    ///
     /// If an output was successfully retrieved, the entity with
     /// which this handle is a component of will be deleted when
     /// the process frame ends

@@ -112,7 +112,7 @@ async fn main() {
     Graphics::run(
         universe,
         LoopCount::Forever,
-        DeltaStrategy::RealDelta(Duration::from_millis(8)),
+        DeltaStrategy::RealDelta(Duration::from_millis(5)),
     )
     .await;
 }
