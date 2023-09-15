@@ -1,4 +1,10 @@
-use std::{any::TypeId, collections::BinaryHeap, marker::Tuple, mem::transmute, ops::Deref};
+use std::{
+    any::TypeId,
+    collections::BinaryHeap,
+    marker::{PhantomData, Tuple},
+    mem::transmute,
+    ops::Deref,
+};
 
 use crossbeam::{atomic::AtomicCell, queue::SegQueue};
 use rayon::prelude::{
@@ -21,12 +27,19 @@ fn arr_to_arc<T: Copy, const N: usize>(arr: [T; N]) -> Arc<[T]> {
 
 pub trait Entity: Tuple + Send + Sync + Sized + 'static {
     fn process(&self, my_index: usize, universe: &Universe);
-    fn flush(&mut self);
+    fn flush(&mut self, my_index: usize, universe: &Universe);
 }
 
 impl<A: Component + Processable> Entity for (A,) {
-    fn flush(&mut self) {
-        self.0.flush();
+    fn flush(&mut self, my_index: usize, universe: &Universe) {
+        self.0.flush(
+            EntityReference {
+                index: my_index,
+                entity: &Inaccessible::<Self>::new(),
+                ignore_ptrs: arr_to_arc([]),
+            },
+            universe,
+        );
     }
 
     fn process(&self, my_index: usize, universe: &Universe) {
@@ -42,8 +55,17 @@ impl<A: Component + Processable> Entity for (A,) {
     }
 }
 impl<A: Component + Processable, B: Component + Processable> Entity for (A, B) {
-    fn flush(&mut self) {
-        rayon::join(|| self.0.flush(), || self.1.flush());
+    fn flush(&mut self, my_index: usize, universe: &Universe) {
+        let entity_ref = EntityReference {
+            index: my_index,
+            entity: &Inaccessible::<Self>::new(),
+            ignore_ptrs: arr_to_arc([]),
+        };
+        let entity_ref2 = entity_ref.clone();
+        rayon::join(
+            || self.0.flush(entity_ref, universe),
+            || self.1.flush(entity_ref2, universe),
+        );
     }
 
     fn process(&self, my_index: usize, universe: &Universe) {
@@ -67,7 +89,7 @@ pub(crate) trait EntityBuffer: Send + Sync {
     /// then adds all entities from the last process frame
     ///
     /// Flushing an entity finalizes all the changes applied onto it
-    fn flush(&mut self);
+    fn flush(&mut self, universe: &Universe);
 
     /// Processes all the entities in this buffer
     ///
@@ -106,10 +128,38 @@ impl<E: Entity> EntityWrapper<E> {
     }
 }
 
-pub trait MaybeEntity {}
+pub trait MaybeEntity {
+    fn get_buffer_type() -> TypeId;
+}
 
-impl MaybeEntity for () {}
-impl<E: Entity> MaybeEntity for E {}
+/// Represents an entity whose components cannot be accessed,
+/// usually because they are currently flushing
+pub struct Inaccessible<T>(PhantomData<T>);
+
+impl<T> Clone for Inaccessible<T> {
+    fn clone(&self) -> Self {
+        Self::new()
+    }
+}
+
+impl<T> Copy for Inaccessible<T> {}
+
+impl<T> Inaccessible<T> {
+    pub(crate) const fn new() -> Self {
+        Self(PhantomData)
+    }
+}
+
+impl<E: Entity> MaybeEntity for Inaccessible<E> {
+    fn get_buffer_type() -> TypeId {
+        TypeId::of::<EntityBufferStruct<E>>()
+    }
+}
+impl<E: Entity> MaybeEntity for E {
+    fn get_buffer_type() -> TypeId {
+        TypeId::of::<EntityBufferStruct<E>>()
+    }
+}
 
 #[derive(Clone)]
 pub struct EntityReference<'a, E: MaybeEntity> {
@@ -257,8 +307,11 @@ impl<E: Entity> EntityBuffer for EntityBufferStruct<E> {
         std::ptr::from_ref(self).cast()
     }
 
-    fn flush(&mut self) {
-        self.buffer.par_iter_mut().for_each(|x| x.entity.flush());
+    fn flush(&mut self, universe: &Universe) {
+        self.buffer
+            .par_iter_mut()
+            .enumerate()
+            .for_each(|(index, x)| x.entity.flush(index, universe));
 
         // Sort entity indices to remove from highest to lowest
         while let Some(index) = self.pending_removes.pop() {

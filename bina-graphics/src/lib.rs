@@ -1,7 +1,5 @@
 #![feature(associated_type_bounds, exclusive_wrapper)]
-use std::
-    sync::{mpsc::Receiver, Exclusive}
-;
+use std::sync::{mpsc::Receiver, Exclusive};
 
 use bina_ecs::{
     crossbeam::queue::{ArrayQueue, SegQueue},
@@ -12,7 +10,7 @@ use bina_ecs::{
     universe::{DeltaStrategy, LoopCount, Universe},
 };
 use drawing::DrawInstruction;
-use polygon::{Material, TEXTURE_VERTEX_BUFFER_DESCRIPTOR};
+use polygon::{Material, TextureVertex};
 use wgpu::BindGroupLayout;
 use winit::{
     dpi::PhysicalSize,
@@ -53,6 +51,14 @@ pub struct Graphics {
 
 impl Graphics {
     /// Creates a new GUI immediately
+    /// 
+    /// To avoid issues with cross compatability, the window's event loop must
+    /// use the main thread. This method ensures that is true while running the Universe
+    /// loop in a separate thread.
+    /// 
+    /// Even though this function never returns, the universe will be safely dropped if a
+    /// component has requested an exit, even if an exit with an error was requested. Any data
+    /// not stored in the Universe will not be dropped however
     pub async fn run(mut universe: Universe, count: LoopCount, delta: DeltaStrategy) -> ! {
         let event_loop = EventLoop::new();
         let window = WindowBuilder::new().build(&event_loop).unwrap();
@@ -158,7 +164,7 @@ impl Graphics {
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: "vs_main",                       // 1.
-                buffers: &[TEXTURE_VERTEX_BUFFER_DESCRIPTOR], // 2.
+                buffers: &[TextureVertex::BUFFER_DESCRIPTOR], // 2.
             },
             fragment: Some(wgpu::FragmentState {
                 // 3.
@@ -174,7 +180,7 @@ impl Graphics {
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleList, // 1.
                 strip_index_format: None,
-                front_face: wgpu::FrontFace::Ccw, // 2.
+                front_face: wgpu::FrontFace::Cw, // 2.
                 cull_mode: Some(wgpu::Face::Back),
                 // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -221,7 +227,10 @@ impl Graphics {
                 empty_instructions_recv: Exclusive::new(empty_instructions_recv),
                 current_instructions_queue: SegQueue::new(),
             });
-            universe.loop_many(count, delta);
+            if let Some(result) = universe.loop_many(count, delta) {
+                drop(universe);
+                result.expect("Error while running Universe");
+            }
             let _ = exit_sender.send(0);
         });
 
@@ -300,7 +309,9 @@ impl Graphics {
                                     }
                                     render_pass
                                         .set_vertex_buffer(0, polygon.inner.vertices.slice(..));
-                                    render_pass.draw(0..polygon.inner.vertex_count, 0..1);
+                                    render_pass
+                                        .set_index_buffer(polygon.inner.indices.slice(..), wgpu::IndexFormat::Uint32);
+                                    render_pass.draw_indexed(0..polygon.inner.indices_count, 0, 0..1);
                                 }
                             }
                         }
@@ -356,7 +367,7 @@ impl Graphics {
 impl Singleton for Graphics {
     fn process(&self, _universe: &Universe) {}
 
-    fn flush(&mut self) {
+    fn flush(&mut self, _universe: &Universe) {
         if self.current_instructions_queue.is_empty() {
             return;
         }

@@ -3,8 +3,8 @@ use bina_ecs::{
     triomphe::Arc,
 };
 use bytemuck::{Pod, Zeroable};
-use cgmath::Point2;
 use image::Rgba;
+use lyon::{math::point, lyon_tessellation::{FillTessellator, FillOptions, BuffersBuilder, VertexBuffers, FillVertex}, path::traits::PathBuilder};
 use wgpu::util::DeviceExt;
 
 use crate::{drawing::DrawInstruction, texture::Texture, Graphics};
@@ -19,7 +19,8 @@ pub struct TextureVertex {
     pub ty: f32,
 }
 
-pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
+impl TextureVertex {
+    pub(crate) const BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
     wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<TextureVertex>() as wgpu::BufferAddress,
         step_mode: wgpu::VertexStepMode::Vertex,
@@ -36,6 +37,7 @@ pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'sta
             },
         ],
     };
+}
 
 pub enum Material {
     FlatColor(Rgba<u8>),
@@ -48,24 +50,65 @@ pub struct Polygon {
 }
 
 pub(crate) struct PolygonInner {
-    pub(crate) vertex_count: u32,
+    pub(crate) indices_count: u32,
     pub(crate) vertices: wgpu::Buffer,
+    pub(crate) indices: wgpu::Buffer,
     pub(crate) material: Material,
 }
 
 impl Polygon {
     pub fn new(graphics: &Graphics, vertices: &[TextureVertex], material: Material) -> Self {
+        let mut builder = lyon::path::Path::builder_with_attributes(2);
+        let mut first = true;
+        for v in vertices {
+            if first {
+                builder.begin(point(v.x, v.y), &[v.tx, v.ty]);
+                first = false;
+            } else {
+                builder.line_to(point(v.x, v.y), &[v.tx, v.ty]);
+            }
+        }
+        builder.close();
+        let path = builder.build();
+
+        let mut tessellator = FillTessellator::new();
+        let mut geometry: VertexBuffers<TextureVertex, u32> = VertexBuffers::new();
+
+        {
+            // Compute the tessellation.
+            tessellator.tessellate_path(
+                &path,
+                &FillOptions::default(),
+                &mut BuffersBuilder::new(&mut geometry, |mut vertex: FillVertex| {
+                    let attrs = vertex.interpolated_attributes();
+                    TextureVertex {
+                        tx: attrs[0],
+                        ty: attrs[1],
+                        x: vertex.position().x,
+                        y: vertex.position().y,
+                    }
+                }),
+            ).unwrap();
+        }
+
         Self {
             inner: Arc::new(PolygonInner {
-                vertex_count: vertices.len() as u32,
                 vertices: graphics.inner.device.create_buffer_init(
                     &wgpu::util::BufferInitDescriptor {
                         label: Some("Vertex Buffer"),
-                        contents: bytemuck::cast_slice(vertices),
+                        contents: bytemuck::cast_slice(&geometry.vertices),
                         usage: wgpu::BufferUsages::VERTEX,
                     },
                 ),
+                indices: graphics.inner.device.create_buffer_init(
+                    &wgpu::util::BufferInitDescriptor {
+                        label: Some("Index Buffer"),
+                        contents: bytemuck::cast_slice(&geometry.indices),
+                        usage: wgpu::BufferUsages::INDEX,
+                    }
+                ),
                 material,
+                indices_count: geometry.indices.len() as u32,
             }),
         }
     }
@@ -86,7 +129,7 @@ impl Processable for Polygon {
         let graphics = unsafe { universe.try_get_singleton::<Graphics>().unwrap_unchecked() };
         graphics.queue_draw_instruction(DrawInstruction::DrawPolygon {
             polygon: component.clone(),
-            origin: Point2::new(0.0, 0.0),
+            origin: point(0.0, 0.0),
         });
     }
 }

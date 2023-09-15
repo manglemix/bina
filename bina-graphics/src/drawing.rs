@@ -1,10 +1,10 @@
-use cgmath::Point2;
+use lyon::math::Point;
 
 use crate::polygon::Polygon;
 
 pub(crate) enum DrawInstruction {
     DrawPolygon {
         polygon: Polygon,
-        origin: Point2<f32>,
+        origin: Point,
     },
 }

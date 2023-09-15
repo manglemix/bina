@@ -251,16 +251,21 @@ impl<const W: u32, const H: u32> TextureResource<Rgba<u8>, W, H> {
                     if let CacheOption::UncacheAfter(duration) = cache_option {
                         let mut last_instant = unsafe { last_access.load().assume_init() };
                         let mut deadline = last_instant + *duration;
+                        let mut write;
                         loop {
                             tokio::time::sleep_until(deadline).await;
                             let current_instant = unsafe { last_access.load().assume_init() };
                             if current_instant == last_instant {
-                                break;
+                                // If we can't write to it immediately,
+                                // then the texture is still being used
+                                if let Ok(tmp) = self.texture.try_write() {
+                                    write = tmp;
+                                    break
+                                }
                             }
                             last_instant = current_instant;
                             deadline = last_instant + *duration;
                         }
-                        write = self.texture.write().await;
                         *write = MaybeTexture::Unloaded;
                     }
                 });

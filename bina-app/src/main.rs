@@ -45,28 +45,34 @@ impl Processable for Lmao {
                     graphics,
                     &[
                         TextureVertex {
-                            x: 0.0,
-                            y: 0.0,
-                            tx: 0.0,
-                            ty: 0.0,
+                            x: -0.0868241,
+                            y: 0.49240386,
+                            tx: 0.4131759,
+                            ty: 0.00759614,
                         },
                         TextureVertex {
-                            x: 1.0,
-                            y: 0.0,
-                            tx: 0.1,
-                            ty: 0.0,
+                            x: -0.49513406,
+                            y: 0.06958647,
+                            tx: 0.0048659444,
+                            ty: 0.43041354,
                         },
-                        // TextureVertex {
-                        //     x: 10.0,
-                        //     y: 10.0,
-                        //     tx: 10.0,
-                        //     ty: 10.0,
-                        // },
                         TextureVertex {
-                            x: 0.0,
-                            y: 1.0,
-                            tx: 0.0,
-                            ty: 0.1,
+                            x: -0.21918549,
+                            y: -0.44939706,
+                            tx: 0.28081453,
+                            ty: 0.949397,
+                        },
+                        TextureVertex {
+                            x: 0.35966998,
+                            y: -0.3473291,
+                            tx: 0.85967,
+                            ty: 0.84732914,
+                        },
+                        TextureVertex {
+                            x: 0.44147372,
+                            y: 0.2347359,
+                            tx: 0.9414737,
+                            ty: 0.2652641,
                         },
                     ],
                     bina::graphics::polygon::Material::Texture(texture),
@@ -74,7 +80,7 @@ impl Processable for Lmao {
             }
         }
         component.count += 1;
-        if component.runtime > 15.0 {
+        if component.runtime > 5.0 {
             universe.exit_ok();
         }
     }
@@ -82,13 +88,16 @@ impl Processable for Lmao {
 
 impl Drop for Lmao {
     fn drop(&mut self) {
-        println!("{}", self.count);
-        println!("{}", self.start.load().elapsed().as_secs_f32());
+        println!(
+            "{}\n{}",
+            self.count,
+            self.start.load().elapsed().as_secs_f32()
+        );
     }
 }
 
-static TEST_JPG: TextureResource<Rgba<u8>, 3060, 4080> =
-    unsafe { TextureResource::new_file("test.jpg", ImageFormat::Jpeg, CacheOption::CacheForever) };
+static TEST_JPG: TextureResource<Rgba<u8>, 256, 256> =
+    unsafe { TextureResource::new_file("test.png", ImageFormat::Png, CacheOption::DontCache) };
 
 #[tokio::main]
 async fn main() {

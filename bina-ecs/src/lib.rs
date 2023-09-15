@@ -26,4 +26,5 @@ pub use parking_lot;
 pub use rayon;
 pub use tokio;
 pub use triomphe;
+pub mod components;
 pub mod singleton;

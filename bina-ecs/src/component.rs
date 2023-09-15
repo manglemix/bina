@@ -1,13 +1,18 @@
 use std::{
     fmt::{Debug, Display},
-    ops::{AddAssign, Deref, SubAssign}, sync::atomic::{AtomicU8, Ordering, AtomicU16, AtomicU32, AtomicU64, AtomicUsize, AtomicI8, AtomicI16, AtomicI32, AtomicI64, AtomicIsize}, mem::MaybeUninit,
+    mem::MaybeUninit,
+    ops::{AddAssign, Deref, SubAssign},
+    sync::atomic::{
+        AtomicI16, AtomicI32, AtomicI64, AtomicI8, AtomicIsize, AtomicU16, AtomicU32, AtomicU64,
+        AtomicU8, AtomicUsize, Ordering,
+    },
 };
 
 use atomic_float::{AtomicF32, AtomicF64};
 use crossbeam::queue::SegQueue;
 
 use crate::{
-    entity::{Entity, EntityReference},
+    entity::{Entity, EntityReference, Inaccessible},
     universe::Universe,
 };
 
@@ -15,7 +20,18 @@ pub trait Component: Send + Sync + 'static {
     type Reference<'a> = &'a Self;
 
     fn get_ref<'a>(&'a self) -> Self::Reference<'a>;
-    fn flush(&mut self) {}
+
+    /// Mutates this component after the process frame ends
+    /// 
+    /// A reference to the entity that is storing this component is available,
+    /// but this method will not be able to get any references to the other components
+    /// in the entity as they will also be flushing
+    fn flush<E: Entity>(
+        &mut self,
+        _my_entity: crate::entity::EntityReference<Inaccessible<E>>,
+        _universe: &Universe,
+    ) {
+    }
 }
 
 pub trait Processable: Component {
@@ -30,11 +46,7 @@ pub trait ComponentField {
     fn process_modifiers(&mut self);
 }
 
-pub trait AtomicNumber:
-    PartialOrd
-    + Copy
-    + Sized
-{
+pub trait AtomicNumber: Copy + Sized {
     type Atomic;
 
     fn new_atomic() -> Self::Atomic;
@@ -61,23 +73,23 @@ macro_rules! impl_num {
         fn load(atomic: &mut Self::Atomic) -> Self {
             *atomic.get_mut()
         }
-    
+
         fn store(atomic: &Self::Atomic, other: Self) {
             atomic.store(other, Ordering::Relaxed);
         }
-    
+
         fn atomic_add_assign(atomic: &Self::Atomic, other: Self) {
             atomic.fetch_add(other, Ordering::Relaxed);
         }
-    
+
         fn atomic_sub_assign(atomic: &Self::Atomic, other: Self) {
             atomic.fetch_sub(other, Ordering::Relaxed);
         }
-    
+
         fn atomic_mul_assign(atomic: &Self::Atomic, other: Self) {
             let _ = atomic.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x * other));
         }
-    
+
         fn atomic_div_assign(atomic: &Self::Atomic, other: Self) {
             let _ = atomic.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |x| Some(x / other));
         }
@@ -102,19 +114,19 @@ macro_rules! impl_num {
 
 impl AtomicNumber for u8 {
     type Atomic = AtomicU8;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for u16 {
     type Atomic = AtomicU16;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for u32 {
     type Atomic = AtomicU32;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for u64 {
     type Atomic = AtomicU64;
-    impl_num!{}
+    impl_num! {}
 }
 // impl AtomicNumber for u128 {
 //     type Atomic = AtomicU128;
@@ -122,24 +134,24 @@ impl AtomicNumber for u64 {
 // }
 impl AtomicNumber for usize {
     type Atomic = AtomicUsize;
-    impl_num!{}
+    impl_num! {}
 }
 
 impl AtomicNumber for i8 {
     type Atomic = AtomicI8;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for i16 {
     type Atomic = AtomicI16;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for i32 {
     type Atomic = AtomicI32;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for i64 {
     type Atomic = AtomicI64;
-    impl_num!{}
+    impl_num! {}
 }
 // impl AtomicNumber for i128 {
 //     type Atomic = AtomicI128;
@@ -147,17 +159,18 @@ impl AtomicNumber for i64 {
 // }
 impl AtomicNumber for isize {
     type Atomic = AtomicIsize;
-    impl_num!{}
+    impl_num! {}
 }
 
 impl AtomicNumber for f32 {
     type Atomic = AtomicF32;
-    impl_num!{}
+    impl_num! {}
 }
 impl AtomicNumber for f64 {
     type Atomic = AtomicF64;
-    impl_num!{}
+    impl_num! {}
 }
+
 impl<T: AtomicNumber, const N: usize> AtomicNumber for [T; N] {
     type Atomic = [T::Atomic; N];
 
@@ -265,7 +278,7 @@ impl<T: AtomicNumber> NumberField<T> {
     pub fn new(number: T) -> Self {
         Self {
             number,
-            new_number: T::new_atomic()
+            new_number: T::new_atomic(),
         }
     }
 

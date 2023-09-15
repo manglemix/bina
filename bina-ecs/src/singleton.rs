@@ -8,5 +8,5 @@ pub trait Singleton: Send + Sync + 'static {
     //     std::ptr::from_mut(self).cast()
     // }
     fn process(&self, _universe: &Universe) {}
-    fn flush(&mut self) {}
+    fn flush(&mut self, _universe: &Universe) {}
 }

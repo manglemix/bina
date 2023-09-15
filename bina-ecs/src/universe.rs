@@ -1,5 +1,6 @@
 use std::{
     any::TypeId,
+    cell::SyncUnsafeCell,
     collections::hash_map::Entry,
     error::Error,
     time::{Duration, Instant},
@@ -19,29 +20,45 @@ use spin_sleep::SpinSleeper;
 use tokio::runtime::Handle;
 
 use crate::{
-    entity::{cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference},
+    entity::{
+        cast_entity_buffer, Entity, EntityBuffer, EntityBufferStruct, EntityReference, MaybeEntity,
+    },
     singleton::Singleton,
 };
 
+#[derive(Default)]
+struct BetterUnsafeCell<T>(SyncUnsafeCell<T>);
+
+impl<T> BetterUnsafeCell<T> {
+    unsafe fn get(&self) -> &T {
+        &*self.0.get()
+    }
+    unsafe fn get_mut(&self) -> &mut T {
+        &mut *self.0.get()
+    }
+    fn safe_get_mut(&mut self) -> &mut T {
+        self.0.get_mut()
+    }
+}
+
 pub struct Universe {
-    entity_buffers: FxHashMap<TypeId, Box<dyn EntityBuffer>>,
+    entity_buffers: BetterUnsafeCell<FxHashMap<TypeId, Box<dyn EntityBuffer>>>,
     pending_new_entity_buffers: Mutex<FxHashMap<TypeId, Box<dyn EntityBuffer>>>,
 
-    singletons: FxHashMap<TypeId, Box<dyn Singleton>>,
+    singletons: BetterUnsafeCell<FxHashMap<TypeId, Box<dyn Singleton>>>,
     pending_new_singletons: Mutex<FxHashMap<TypeId, Box<dyn Singleton>>>,
 
     exit_result: AtomicCell<Option<Result<(), Box<dyn Error + Send + Sync>>>>,
-    async_handle: Handle,
+    async_handle: Option<Handle>,
     delta_accurate: f64,
     delta: f32,
 }
 
 impl Universe {
     /// Creates a new Universe that is ready for immediate use
-    ///
-    /// # Panics
-    /// Panics if called from outside a tokio runtime. The easiest
-    /// way to avoid this is to call this from inside an async method
+    /// 
+    /// If called from within a tokio runtime, a handle to the runtime
+    /// will be stored
     pub fn new() -> Self {
         Self {
             entity_buffers: Default::default(),
@@ -49,7 +66,7 @@ impl Universe {
             singletons: Default::default(),
             pending_new_singletons: Default::default(),
             exit_result: Default::default(),
-            async_handle: Handle::current(),
+            async_handle: Handle::try_current().ok(),
             delta_accurate: Default::default(),
             delta: Default::default(),
         }
@@ -60,7 +77,7 @@ impl Universe {
         let mut lock;
         let entry;
 
-        let buffer = if let Some(buffer) = self.entity_buffers.get(&type_id) {
+        let buffer = if let Some(buffer) = unsafe { self.entity_buffers.get() }.get(&type_id) {
             buffer
         } else {
             lock = self.pending_new_entity_buffers.lock();
@@ -78,18 +95,24 @@ impl Universe {
     }
 
     pub fn iter_entities<E: Entity>(&self) -> Option<impl IndexedParallelIterator + '_> {
-        self.entity_buffers
-            .get(&TypeId::of::<EntityBufferStruct<E>>())
-            .map(|buffer| {
-                let buffer: &EntityBufferStruct<E> = unsafe { cast_entity_buffer(buffer) };
-                buffer.par_iter()
-            })
+        unsafe {
+            self.entity_buffers
+                .get()
+                .get(&TypeId::of::<EntityBufferStruct<E>>())
+                .map(|buffer| {
+                    let buffer: &EntityBufferStruct<E> = cast_entity_buffer(buffer);
+                    buffer.par_iter()
+                })
+        }
     }
 
-    pub fn queue_remove_entity<E: Entity>(&self, reference: EntityReference<E>) {
-        self.entity_buffers
-            .get(&TypeId::of::<EntityBufferStruct<E>>())
-            .map(|buffer| buffer.queue_remove_entity(reference.index));
+    pub fn queue_remove_entity<E: MaybeEntity>(&self, reference: EntityReference<E>) {
+        unsafe {
+            self.entity_buffers
+                .get()
+                .get(&E::get_buffer_type())
+                .map(|buffer| buffer.queue_remove_entity(reference.index))
+        };
     }
 
     /// Gets a singleton
@@ -104,10 +127,12 @@ impl Universe {
 
     /// Gets a singleton if it exists
     pub fn try_get_singleton<T: Singleton>(&self) -> Option<&T> {
-        self.singletons.get(&TypeId::of::<T>()).map(|x| unsafe {
-            let ptr: *const T = x.get_void_ptr().cast();
-            &*ptr
-        })
+        unsafe {
+            self.singletons.get().get(&TypeId::of::<T>()).map(|x| {
+                let ptr: *const T = x.get_void_ptr().cast();
+                &*ptr
+            })
+        }
     }
 
     /// Adds a new singleton, or overwrites and existing singleton
@@ -117,9 +142,17 @@ impl Universe {
             .insert(TypeId::of::<T>(), Box::new(singleton));
     }
 
-    #[must_use = "Enter guard is only useful while not dropped"]
+    /// If this universe was initialized without a tokio runtime,
+    /// one can be added with this method
+    /// 
+    /// # Panics
+    /// This will panic if called outside of a tokio runtime
+    pub fn init_tokio(&mut self) {
+        self.async_handle = Some(Handle::current());
+    }
+
     pub fn enter_tokio(&self) -> tokio::runtime::EnterGuard {
-        self.async_handle.enter()
+        self.async_handle.as_ref().unwrap().enter()
     }
 
     pub fn exit_ok(&self) {
@@ -133,14 +166,16 @@ impl Universe {
     pub fn loop_once(&mut self) -> Option<Result<(), Box<dyn Error + Send + Sync>>> {
         join(
             // Process all entities
-            || {
+            || unsafe {
                 self.entity_buffers
+                    .get()
                     .par_iter()
                     .for_each(|(_, x)| x.process(self))
             },
             // Process all singletons
-            || {
+            || unsafe {
                 self.singletons
+                    .get()
                     .par_iter()
                     .for_each(|(_, x)| x.process(self))
             },
@@ -152,24 +187,32 @@ impl Universe {
 
         join(
             // Flush entity buffers
-            || {
+            || unsafe {
                 self.entity_buffers
+                    .get_mut()
                     .par_iter_mut()
-                    .for_each(|(_, x)| x.flush())
+                    .for_each(|(_, x)| x.flush(self))
             },
             // Flush singletons
-            || self.singletons.par_iter_mut().for_each(|(_, x)| x.flush()),
+            || unsafe {
+                self.singletons
+                    .get_mut()
+                    .par_iter_mut()
+                    .for_each(|(_, x)| x.flush(self))
+            },
         );
 
         join(
             // Add/replace singletons
             || {
                 self.singletons
+                    .safe_get_mut()
                     .extend(self.pending_new_singletons.get_mut().drain())
             },
             // Add new entity buffers
             || {
                 self.entity_buffers
+                    .safe_get_mut()
                     .extend(self.pending_new_entity_buffers.get_mut().drain())
             },
         );

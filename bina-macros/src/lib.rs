@@ -104,7 +104,7 @@ pub fn derive_component(input: TokenStream) -> TokenStream {
                     _phantom: std::marker::PhantomData
                 }
             }
-            fn flush(&mut self) {
+            fn flush<E: bina::ecs::entity::Entity>(&mut self, _my_entity: bina::ecs::entity::EntityReference<bina::ecs::entity::Inaccessible<E>>, _universe: &bina::ecs::universe::Universe) {
                 #(#flush_body)*
             }
         }
