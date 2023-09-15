@@ -9,8 +9,8 @@ use bina_ecs::{
     triomphe::{self, Arc},
     universe::{DeltaStrategy, LoopCount, Universe},
 };
-use drawing::{DrawInstruction, Renderer};
-use polygon::TextureVertex;
+use drawing::DrawInstruction;
+use renderers::{PolygonRenderer, PolygonRendererCreation};
 use wgpu::BindGroupLayout;
 use winit::{
     dpi::PhysicalSize,
@@ -22,6 +22,7 @@ use winit::{
 pub use image;
 pub mod drawing;
 pub mod polygon;
+mod renderers;
 pub mod texture;
 
 struct Config {
@@ -38,8 +39,8 @@ struct GraphicsInner {
     // it gets dropped after it as the surface contains
     // unsafe references to the window's resources.
     window: Window,
-    // render_pipeline: wgpu::RenderPipeline,
-    texture_bind_group_layout: BindGroupLayout,
+    texture_bind_grp_layout: BindGroupLayout,
+    transform_bind_grp_layout: BindGroupLayout,
 }
 
 pub struct Graphics {
@@ -124,79 +125,26 @@ impl Graphics {
             view_formats: vec![],
         };
         surface.configure(&device, &config);
-        let texture_bind_group_layout =
+
+        let transform_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        ty: wgpu::BindingType::Texture {
-                            multisampled: false,
-                            view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        },
-                        count: None,
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
                     },
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 1,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
-                        // This should match the filterable field of the
-                        // corresponding Texture entry above.
-                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                        count: None,
-                    },
-                ],
-                label: Some("texture_bind_group_layout"),
+                    count: None,
+                }],
+                label: Some("transform_bind_group_layout"),
             });
 
-        let render_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout],
-                push_constant_ranges: &[],
-            });
-
-        let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
-
-        let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("Render Pipeline"),
-            layout: Some(&render_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: "vs_main",                       // 1.
-                buffers: &[TextureVertex::BUFFER_DESCRIPTOR], // 2.
-            },
-            fragment: Some(wgpu::FragmentState {
-                // 3.
-                module: &shader,
-                entry_point: "fs_main",
-                targets: &[Some(wgpu::ColorTargetState {
-                    // 4.
-                    format: config.format,
-                    blend: Some(wgpu::BlendState::REPLACE),
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList, // 1.
-                strip_index_format: None,
-                front_face: wgpu::FrontFace::Cw, // 2.
-                cull_mode: Some(wgpu::Face::Back),
-                // Setting this to anything other than Fill requires Features::NON_FILL_POLYGON_MODE
-                polygon_mode: wgpu::PolygonMode::Fill,
-                // Requires Features::DEPTH_CLIP_CONTROL
-                unclipped_depth: false,
-                // Requires Features::CONSERVATIVE_RASTERIZATION
-                conservative: false,
-            },
-            depth_stencil: None, // 1.
-            multisample: wgpu::MultisampleState {
-                count: 1,                         // 2.
-                mask: !0,                         // 3.
-                alpha_to_coverage_enabled: false, // 4.
-            },
-            multiview: None,
-        });
+        let PolygonRendererCreation {
+            mut poly_render,
+            tex_grp_layout,
+        } = PolygonRenderer::new(&device, &config, &transform_bind_group_layout);
 
         let graphics = Arc::new(GraphicsInner {
             surface,
@@ -204,8 +152,8 @@ impl Graphics {
             queue,
             config: Mutex::new(Config { config, size }),
             window,
-            // render_pipeline,
-            texture_bind_group_layout,
+            texture_bind_grp_layout: tex_grp_layout,
+            transform_bind_grp_layout: transform_bind_group_layout,
         });
 
         let cloned = graphics.clone();
@@ -233,8 +181,6 @@ impl Graphics {
             }
             let _ = exit_sender.send(0);
         });
-
-        let mut renderer = Renderer::new();
 
         event_loop.run(move |event, _, control_flow| {
             match event {
@@ -271,11 +217,41 @@ impl Graphics {
                                 label: Some("Render Encoder"),
                             });
 
-                    renderer.draw_all(&mut encoder, &view, &render_pipeline, &mut instructions);
+                    for instruction in instructions.drain(..) {
+                        match instruction {
+                            DrawInstruction::DrawPolygon(x) => poly_render.push(x),
+                        }
+                    }
+                    {
+                        let mut render_pass =
+                            encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                                label: Some("Render Pass"),
+                                color_attachments: &[
+                                    // This is what @location(0) in the fragment shader targets
+                                    Some(wgpu::RenderPassColorAttachment {
+                                        view: &view,
+                                        resolve_target: None,
+                                        ops: wgpu::Operations {
+                                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                                r: 0.0,
+                                                g: 0.0,
+                                                b: 0.0,
+                                                a: 1.0,
+                                            }),
+                                            store: true,
+                                        },
+                                    }),
+                                ],
+                                depth_stencil_attachment: None,
+                            });
 
+                        poly_render.draw_all(&mut render_pass);
+                    }
                     // submit will accept anything that implements IntoIter
                     graphics.queue.submit(std::iter::once(encoder.finish()));
                     output.present();
+                    poly_render.clear();
+
                     unsafe {
                         empty_instructions_sender
                             .send(instructions)

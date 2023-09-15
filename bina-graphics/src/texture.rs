@@ -137,7 +137,7 @@ fn load_img<const W: u32, const H: u32>(graphics: &Graphics, img: &[u8]) -> Text
         .inner
         .device
         .create_bind_group(&wgpu::BindGroupDescriptor {
-            layout: &graphics.inner.texture_bind_group_layout,
+            layout: &graphics.inner.texture_bind_grp_layout,
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,

@@ -8,7 +8,7 @@ use bina::ecs::entity::EntityReference;
 use bina::ecs::tokio;
 use bina::ecs::universe::{DeltaStrategy, LoopCount, Universe};
 use bina::graphics::image::{ImageFormat, Rgba};
-use bina::graphics::polygon::{Polygon, TextureVertex};
+use bina::graphics::polygon::{Polygon, Vertex};
 use bina::graphics::texture::{CacheOption, TextureResource};
 use bina::graphics::Graphics;
 use bina::macros::derive_component;
@@ -44,36 +44,56 @@ impl Processable for Lmao {
                 universe.queue_add_entity((Polygon::new(
                     graphics,
                     &[
-                        TextureVertex {
-                            x: -0.0868241,
-                            y: 0.49240386,
-                            tx: 0.4131759,
-                            ty: 0.00759614,
-                        },
-                        TextureVertex {
-                            x: -0.49513406,
-                            y: 0.06958647,
-                            tx: 0.0048659444,
-                            ty: 0.43041354,
-                        },
-                        TextureVertex {
-                            x: -0.21918549,
-                            y: -0.44939706,
-                            tx: 0.28081453,
-                            ty: 0.949397,
-                        },
-                        TextureVertex {
-                            x: 0.35966998,
-                            y: -0.3473291,
-                            tx: 0.85967,
-                            ty: 0.84732914,
-                        },
-                        TextureVertex {
-                            x: 0.44147372,
-                            y: 0.2347359,
-                            tx: 0.9414737,
-                            ty: 0.2652641,
-                        },
+                        (
+                            Vertex {
+                                x: -0.0868241,
+                                y: 0.49240386,
+                            },
+                            Vertex {
+                                x: 0.4131759,
+                                y: 0.00759614,
+                            },
+                        ),
+                        (
+                            Vertex {
+                                x: -0.49513406,
+                                y: 0.06958647,
+                            },
+                            Vertex {
+                                x: 0.0048659444,
+                                y: 0.43041354,
+                            },
+                        ),
+                        (
+                            Vertex {
+                                x: -0.21918549,
+                                y: -0.44939706,
+                            },
+                            Vertex {
+                                x: 0.28081453,
+                                y: 0.949397,
+                            },
+                        ),
+                        (
+                            Vertex {
+                                x: 0.35966998,
+                                y: -0.3473291,
+                            },
+                            Vertex {
+                                x: 0.85967,
+                                y: 0.84732914,
+                            },
+                        ),
+                        (
+                            Vertex {
+                                x: 0.44147372,
+                                y: 0.2347359,
+                            },
+                            Vertex {
+                                x: 0.9414737,
+                                y: 0.2652641,
+                            },
+                        ),
                     ],
                     bina::graphics::polygon::Material::Texture(texture),
                 ),))

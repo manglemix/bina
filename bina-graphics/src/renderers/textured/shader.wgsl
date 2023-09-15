@@ -8,13 +8,21 @@ struct VertexOutput {
     @location(0) tex_coords: vec2<f32>,
 }
 
+struct Transform {
+    basis: mat2x2<f32>,
+    origin: vec2<f32>
+}
+
+@group(1) @binding(0)
+var<uniform> transform: Transform;
+
 @vertex
 fn vs_main(
     model: VertexInput,
 ) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
-    out.clip_position = vec4<f32>(model.position, 0.0, 1.0);
+    out.clip_position = vec4<f32>(transform.basis * model.position + transform.origin, 0.0, 1.0);
     return out;
 }
 

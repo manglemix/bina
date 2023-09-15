@@ -220,10 +220,12 @@ impl Universe {
         None
     }
 
+    #[inline(always)]
     pub fn get_delta(&self) -> f32 {
         self.delta
     }
 
+    #[inline(always)]
     pub fn get_delta_accurate(&self) -> f64 {
         self.delta_accurate
     }
