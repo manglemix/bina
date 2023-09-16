@@ -41,7 +41,10 @@ impl TexturedPolygonRenderer {
         let render_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Render Pipeline Layout"),
-                bind_group_layouts: &[&texture_bind_group_layout, transform_bind_group_layout],
+                bind_group_layouts: &[
+                    &texture_bind_group_layout,
+                    transform_bind_group_layout
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -106,8 +109,7 @@ impl TexturedPolygonRenderer {
 
         for DrawPolygon {
             polygon,
-            transform,
-            z: _z,
+            ..
         } in &self.buffer
         {
             let Material::Texture(texture) = &polygon.material else {
@@ -115,7 +117,7 @@ impl TexturedPolygonRenderer {
             };
 
             bind_grp_tracker.set_bind_group(render_pass, &texture.texture.bind_group);
-            render_pass.set_bind_group(1, &transform, &[]);
+            render_pass.set_bind_group(1, &polygon.transform_bind_group, &[]);
             render_pass.set_vertex_buffer(0, polygon.vertices.slice(..));
             render_pass.set_index_buffer(polygon.indices.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..polygon.indices_count, 0, 0..1);

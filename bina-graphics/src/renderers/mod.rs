@@ -9,7 +9,6 @@ mod textured;
 
 pub(crate) struct DrawPolygon {
     pub(crate) polygon: Arc<PolygonInner>,
-    pub(crate) transform: BindGroup,
     pub(crate) z: u32,
 }
 

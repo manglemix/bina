@@ -1,8 +1,8 @@
 #![feature(associated_type_bounds, exclusive_wrapper, let_chains)]
-use std::sync::{mpsc::Receiver, Exclusive};
+use std::sync::{mpsc::{Receiver, TryRecvError}, Exclusive};
 
 use bina_ecs::{
-    crossbeam::queue::{ArrayQueue, SegQueue},
+    crossbeam::{queue::{ArrayQueue, SegQueue}, utils::Backoff},
     parking_lot::Mutex,
     rayon,
     singleton::Singleton,
@@ -52,6 +52,9 @@ pub struct Graphics {
 
 impl Graphics {
     /// Creates a new GUI immediately
+    /// 
+    /// Generally, the only `DeltaStrategy` you should use is `RealDelta` with a delta
+    /// of 0. The window will stop the given `Universe` from processing more frames than needed.
     ///
     /// To avoid issues with cross compatability, the window's event loop must
     /// use the main thread. This method ensures that is true while running the Universe
@@ -60,9 +63,9 @@ impl Graphics {
     /// Even though this function never returns, the universe will be safely dropped if a
     /// component has requested an exit, even if an exit with an error was requested. Any data
     /// not stored in the Universe will not be dropped however
-    pub async fn run(mut universe: Universe, count: LoopCount, delta: DeltaStrategy) -> ! {
+    pub async fn run(mut universe: Universe, count: LoopCount, delta: DeltaStrategy, title: impl Into<String>) -> ! {
         let event_loop = EventLoop::new();
-        let window = WindowBuilder::new().build(&event_loop).unwrap();
+        let window = WindowBuilder::new().with_title(title).build(&event_loop).unwrap();
 
         let size = window.inner_size();
 
@@ -165,7 +168,7 @@ impl Graphics {
         unsafe {
             empty_instructions_sender
                 .send(Vec::new())
-                .unwrap_unchecked()
+                .unwrap_unchecked();
         }
 
         rayon::spawn(move || {
@@ -189,9 +192,18 @@ impl Graphics {
                         *control_flow = ControlFlow::ExitWithCode(n);
                         return;
                     }
-                    let Some(mut instructions) = filled_instructions_receiver.pop() else {
-                        return;
+
+                    let mut instructions = {
+                        let backoff = Backoff::new();
+                        loop {
+                            let Some(tmp) = filled_instructions_receiver.pop() else {
+                                backoff.snooze();
+                                continue;
+                            };
+                            break tmp
+                        }
                     };
+
                     let output = match graphics.surface.get_current_texture() {
                         Ok(x) => x,
                         Err(e) => match e {
@@ -300,7 +312,29 @@ impl Singleton for Graphics {
         if self.current_instructions_queue.is_empty() {
             return;
         }
-        let mut vec = self.empty_instructions_recv.get_mut().recv().unwrap();
+        let empty_instructions_recv = self.empty_instructions_recv.get_mut();
+
+        let mut vec = empty_instructions_recv.try_recv().unwrap_or_else(|e| match e {
+            TryRecvError::Empty => {
+                // println!("No buffer");
+                match empty_instructions_recv.recv() {
+                    Ok(x) => x,
+                    Err(_) => loop {
+                        // If the event loop has closed, it is only a matter
+                        // of time before this thread will end as well,
+                        // as the event loop is always running on the main thread
+                        std::hint::spin_loop()
+                    }
+                }}
+            
+            TryRecvError::Disconnected => loop {
+                // If the event loop has closed, it is only a matter
+                // of time before this thread will end as well,
+                // as the event loop is always running on the main thread
+                std::hint::spin_loop()
+            }
+        });
+
         vec.reserve(self.current_instructions_queue.len());
         while let Some(instruction) = self.current_instructions_queue.pop() {
             vec.push(instruction);

@@ -22,7 +22,10 @@ fn vs_main(
 ) -> VertexOutput {
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
-    out.clip_position = vec4<f32>(transform.basis * model.position + transform.origin, 0.0, 1.0);
+    out.clip_position = vec4<f32>(
+        transform.basis * model.position + transform.origin,
+        // model.position,
+        0.0, 1.0);
     return out;
 }
 

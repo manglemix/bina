@@ -16,7 +16,7 @@ use rayon::{
         ParallelIterator,
     },
 };
-use spin_sleep::SpinSleeper;
+use spin_sleep::{SpinSleeper, LoopHelper};
 use tokio::runtime::Handle;
 
 use crate::{
@@ -250,26 +250,18 @@ impl Universe {
                     self.delta = delta.as_secs_f32();
                 },
                 DeltaStrategy::RealDelta(delta) => {
-                    let start = Instant::now();
-                    let mut last_duration = Duration::ZERO;
-                    if delta.is_zero() {
-                        loop {
-                            loop_once!();
-                            let current_duration = start.elapsed();
-                            self.delta_accurate = (current_duration - last_duration).as_secs_f64();
-                            self.delta = self.delta_accurate as f32;
-                            last_duration = current_duration
-                        }
+                    let loop_helper = LoopHelper::builder().report_interval_s(0.5);
+                    let mut loop_helper = if delta.is_zero() {
+                        loop_helper.build_without_target_rate()
                     } else {
-                        let sleeper = SpinSleeper::default();
-                        loop {
-                            loop_once!();
-                            sleeper.sleep(delta.saturating_sub(start.elapsed() - last_duration));
-                            let current_duration = start.elapsed();
-                            self.delta_accurate = (current_duration - last_duration).as_secs_f64();
-                            self.delta = self.delta_accurate as f32;
-                            last_duration = current_duration
-                        }
+                        loop_helper.build_with_target_rate(1.0 / delta.as_secs_f64())
+                    };
+                    loop {
+                        let delta = loop_helper.loop_start();
+                        self.delta_accurate = delta.as_secs_f64();
+                        self.delta = delta.as_secs_f32();
+                        loop_once!();
+                        loop_helper.loop_sleep();
                     }
                 }
             }

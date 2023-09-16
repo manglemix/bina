@@ -38,7 +38,7 @@ pub struct Vertex {
 
 pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
     wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress * 2,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &[
             wgpu::VertexAttribute {
@@ -54,16 +54,23 @@ pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'sta
         ],
     };
 
-pub(crate) const VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
-    wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
-        step_mode: wgpu::VertexStepMode::Vertex,
-        attributes: &[wgpu::VertexAttribute {
-            offset: 0,
-            shader_location: 0,
-            format: wgpu::VertexFormat::Float32x2,
-        }],
-    };
+// pub(crate) const VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
+//     wgpu::VertexBufferLayout {
+//         array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+//         step_mode: wgpu::VertexStepMode::Vertex,
+//         attributes: &[wgpu::VertexAttribute {
+//             offset: 0,
+//             shader_location: 0,
+//             format: wgpu::VertexFormat::Float32x2,
+//         }],
+//     };
+
+const TRANSFORM_BUFFER_DESCRIPTOR: wgpu::BufferDescriptor<'static> = wgpu::BufferDescriptor {
+    label: Some("transform_buffer_descriptor"),
+    size: size_of::<f32>() as u64 * 6,
+    usage: BufferUsages::UNIFORM.union(BufferUsages::COPY_DST),
+    mapped_at_creation: false,
+};
 
 pub enum Material {
     FlatColor(Rgba<u8>),
@@ -84,6 +91,8 @@ pub(crate) struct PolygonInner {
     pub(crate) vertices: wgpu::Buffer,
     pub(crate) indices: wgpu::Buffer,
     pub(crate) material: Material,
+    pub(crate) transform_buffer: wgpu::Buffer,
+    pub(crate) transform_bind_group: wgpu::BindGroup
 }
 
 impl Polygon {
@@ -123,6 +132,11 @@ impl Polygon {
                 .unwrap();
         }
 
+        let transform_buffer = graphics
+            .inner
+            .device
+            .create_buffer(&TRANSFORM_BUFFER_DESCRIPTOR);
+
         Self {
             inner: Arc::new(PolygonInner {
                 vertices: graphics.inner.device.create_buffer_init(
@@ -141,6 +155,18 @@ impl Polygon {
                 ),
                 material,
                 indices_count: geometry.indices.len() as u32,
+                transform_bind_group: graphics
+                    .inner
+                    .device
+                    .create_bind_group(&wgpu::BindGroupDescriptor {
+                        layout: &graphics.inner.transform_bind_grp_layout,
+                        entries: &[wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(transform_buffer.as_entire_buffer_binding()),
+                        }],
+                        label: Some("transform_bind_group"),
+                    }),
+                transform_buffer,
             }),
             origin: NumberField::new(Vector::new(0.0, 0.0)),
             z: NumberField::new(0),
@@ -196,12 +222,9 @@ impl Processable for Polygon {
         // component.scale += Vector::new(0.5 * universe.get_delta(), 0.0);
 
         let basis = component.basis;
-        let buf = graphics
-            .inner
-            .device
-            .create_buffer(&TRANSFORM_BUFFER_DESCRIPTOR);
+        
         graphics.inner.queue.write_buffer(
-            &buf,
+            &component.inner.transform_buffer,
             0,
             bytemuck::cast_slice(&[
                 basis[0].x,
@@ -213,21 +236,8 @@ impl Processable for Polygon {
             ]),
         );
 
-        let transform = graphics
-            .inner
-            .device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                layout: &graphics.inner.transform_bind_grp_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Buffer(buf.as_entire_buffer_binding()),
-                }],
-                label: Some("transform_bind_group"),
-            });
-
         graphics.queue_draw_instruction(DrawInstruction::DrawPolygon(DrawPolygon {
             polygon: component.inner.clone(),
-            transform,
             z: *component.z,
         }));
     }
@@ -336,10 +346,3 @@ pub struct PolygonRef<'a> {
     pub scale: NumberFieldRef<'a, Vector>,
     pub(crate) basis: &'a [lyon::math::Vector; 2],
 }
-
-const TRANSFORM_BUFFER_DESCRIPTOR: wgpu::BufferDescriptor<'static> = wgpu::BufferDescriptor {
-    label: Some("transform_buffer_descriptor"),
-    size: size_of::<f32>() as u64 * 6,
-    usage: BufferUsages::UNIFORM.union(BufferUsages::COPY_DST),
-    mapped_at_creation: false,
-};

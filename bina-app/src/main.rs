@@ -100,7 +100,7 @@ impl Processable for Lmao {
             }
         }
         component.count += 1;
-        if component.runtime > 5.0 {
+        if component.runtime > 15.0 {
             universe.exit_ok();
         }
     }
@@ -109,9 +109,10 @@ impl Processable for Lmao {
 impl Drop for Lmao {
     fn drop(&mut self) {
         println!(
-            "{}\n{}",
+            "{} frames\n{} secs\n{} FPS",
             self.count,
-            self.start.load().elapsed().as_secs_f32()
+            self.start.load().elapsed().as_secs_f32(),
+            self.count.get_inner() as f64 / self.start.load().elapsed().as_secs_f64()
         );
     }
 }
@@ -132,7 +133,8 @@ async fn main() {
     Graphics::run(
         universe,
         LoopCount::Forever,
-        DeltaStrategy::RealDelta(Duration::from_millis(5)),
+        DeltaStrategy::RealDelta(Duration::from_millis(0)),
+        "Test"
     )
     .await;
 }
