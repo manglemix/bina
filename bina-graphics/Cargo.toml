@@ -17,3 +17,4 @@ log = { workspace = true }
 bytemuck = { version = "1.12", features = [ "derive" ] }
 lyon = "1.0"
 atomic_float = "0.1"
+nalgebra = "0.32"

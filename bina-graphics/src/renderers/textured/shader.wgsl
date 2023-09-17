@@ -12,9 +12,16 @@ struct Transform {
     basis: mat2x2<f32>,
     origin: vec2<f32>
 }
+struct CameraMatrix {
+    inverse_basis: mat2x2<f32>,
+    origin: vec2<f32>
+}
+
 
 @group(1) @binding(0)
 var<uniform> transform: Transform;
+@group(2) @binding(0)
+var<uniform> camera_matrix: CameraMatrix;
 
 @vertex
 fn vs_main(
@@ -23,7 +30,7 @@ fn vs_main(
     var out: VertexOutput;
     out.tex_coords = model.tex_coords;
     out.clip_position = vec4<f32>(
-        transform.basis * model.position + transform.origin,
+        camera_matrix.inverse_basis * (transform.basis * model.position + transform.origin - camera_matrix.origin),
         // model.position,
         0.0, 1.0);
     return out;

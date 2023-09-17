@@ -23,8 +23,8 @@ pub(crate) struct PolygonRenderer {
 }
 
 impl PolygonRenderer {
-    pub(super) fn new(device: &Device, config: &SurfaceConfiguration, transform_bind_group_layout: &BindGroupLayout) -> PolygonRendererCreation {
-        let (tex_poly, tex_grp_layout) = TexturedPolygonRenderer::new(device, config, transform_bind_group_layout);
+    pub(super) fn new(device: &Device, config: &SurfaceConfiguration, transform_bind_group_layout: &BindGroupLayout, camera_bind_group_layout: &BindGroupLayout) -> PolygonRendererCreation {
+        let (tex_poly, tex_grp_layout) = TexturedPolygonRenderer::new(device, config, transform_bind_group_layout, camera_bind_group_layout);
         PolygonRendererCreation {
             poly_render: Self {
                 z_buffer: Default::default(),
@@ -37,7 +37,7 @@ impl PolygonRenderer {
         self.z_buffer.push(item);
     }
 
-    pub(super) fn draw_all<'a>(&'a mut self, render_pass: &mut RenderPass<'a>) {
+    pub(super) fn draw_all<'a>(&'a mut self, render_pass: &mut RenderPass<'a>, camera_matrix_buffer_bind_group: &'a BindGroup) {
         self.z_buffer.par_sort_unstable_by_key(|x| x.z);
 
         for draw_polygon in self.z_buffer.drain(..) {
@@ -49,7 +49,7 @@ impl PolygonRenderer {
             }
         }
 
-        self.tex_poly.draw_all(render_pass);
+        self.tex_poly.draw_all(render_pass, camera_matrix_buffer_bind_group);
     }
 
     pub(super) fn clear(&mut self) {

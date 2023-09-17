@@ -8,7 +8,7 @@ use bina::ecs::entity::EntityReference;
 use bina::ecs::tokio;
 use bina::ecs::universe::{DeltaStrategy, LoopCount, Universe};
 use bina::graphics::image::{ImageFormat, Rgba};
-use bina::graphics::polygon::{Polygon, Vertex};
+use bina::graphics::polygon::{Polygon, Vector};
 use bina::graphics::texture::{CacheOption, TextureResource};
 use bina::graphics::Graphics;
 use bina::macros::derive_component;
@@ -45,54 +45,51 @@ impl Processable for Lmao {
                     graphics,
                     &[
                         (
-                            Vertex {
-                                x: -0.0868241,
-                                y: 0.49240386,
-                            },
-                            Vertex {
-                                x: 0.4131759,
-                                y: 0.00759614,
-                            },
+                            Vector::new(-0.0868241, 0.49240386),
+                            Vector::new(
+                                0.4131759,
+                                0.00759614,
+                            )
                         ),
                         (
-                            Vertex {
-                                x: -0.49513406,
-                                y: 0.06958647,
-                            },
-                            Vertex {
-                                x: 0.0048659444,
-                                y: 0.43041354,
-                            },
+                            Vector::new(
+                                -0.49513406,
+                                0.06958647,
+                            ),
+                            Vector::new(
+                                0.0048659444,
+                                0.43041354,
+                            )
                         ),
                         (
-                            Vertex {
-                                x: -0.21918549,
-                                y: -0.44939706,
-                            },
-                            Vertex {
-                                x: 0.28081453,
-                                y: 0.949397,
-                            },
+                            Vector::new(
+                                -0.21918549,
+                                -0.44939706,
+                            ),
+                            Vector::new(
+                                0.28081453,
+                                0.949397,
+                            ),
                         ),
                         (
-                            Vertex {
-                                x: 0.35966998,
-                                y: -0.3473291,
-                            },
-                            Vertex {
-                                x: 0.85967,
-                                y: 0.84732914,
-                            },
+                            Vector::new(
+                                0.35966998,
+                                -0.3473291,
+                            ),
+                            Vector::new(
+                                0.85967,
+                                0.84732914,
+                            )
                         ),
                         (
-                            Vertex {
-                                x: 0.44147372,
-                                y: 0.2347359,
-                            },
-                            Vertex {
-                                x: 0.9414737,
-                                y: 0.2652641,
-                            },
+                            Vector::new(
+                                0.44147372,
+                                0.2347359,
+                            ),
+                            Vector::new(
+                                0.9414737,
+                                0.2652641,
+                            ),
                         ),
                     ],
                     bina::graphics::polygon::Material::Texture(texture),
@@ -134,7 +131,8 @@ async fn main() {
         universe,
         LoopCount::Forever,
         DeltaStrategy::RealDelta(Duration::from_millis(0)),
-        "Test"
+        "Test",
+        bina::graphics::ScalingMode::Expand
     )
     .await;
 }

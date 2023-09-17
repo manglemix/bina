@@ -181,10 +181,6 @@ impl Universe {
             },
         );
 
-        if let Some(result) = self.exit_result.take() {
-            return Some(result);
-        }
-
         join(
             // Flush entity buffers
             || unsafe {
@@ -201,6 +197,10 @@ impl Universe {
                     .for_each(|(_, x)| x.flush(self))
             },
         );
+
+        if let Some(result) = self.exit_result.take() {
+            return Some(result);
+        }
 
         join(
             // Add/replace singletons

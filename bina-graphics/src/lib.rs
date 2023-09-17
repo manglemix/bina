@@ -1,5 +1,5 @@
 #![feature(associated_type_bounds, exclusive_wrapper, let_chains)]
-use std::sync::{mpsc::{Receiver, TryRecvError}, Exclusive};
+use std::{sync::{mpsc::{Receiver, TryRecvError}, Exclusive}, mem::size_of};
 
 use bina_ecs::{
     crossbeam::{queue::{ArrayQueue, SegQueue}, utils::Backoff},
@@ -9,9 +9,11 @@ use bina_ecs::{
     triomphe::{self, Arc},
     universe::{DeltaStrategy, LoopCount, Universe},
 };
+use camera::Camera;
 use drawing::DrawInstruction;
+use nalgebra::Matrix2;
 use renderers::{PolygonRenderer, PolygonRendererCreation};
-use wgpu::BindGroupLayout;
+use wgpu::{BindGroupLayout, BufferUsages};
 use winit::{
     dpi::PhysicalSize,
     event::*,
@@ -24,6 +26,14 @@ pub mod drawing;
 pub mod polygon;
 mod renderers;
 pub mod texture;
+pub use nalgebra;
+pub mod camera;
+
+
+pub enum ScalingMode {
+    Expand,
+    Shrink
+}
 
 struct Config {
     config: wgpu::SurfaceConfiguration,
@@ -40,7 +50,8 @@ struct GraphicsInner {
     // unsafe references to the window's resources.
     window: Window,
     texture_bind_grp_layout: BindGroupLayout,
-    transform_bind_grp_layout: BindGroupLayout,
+    transform_bind_group_layout: BindGroupLayout,
+    camera_matrix_buffer: wgpu::Buffer
 }
 
 pub struct Graphics {
@@ -48,6 +59,7 @@ pub struct Graphics {
     current_instructions_queue: SegQueue<DrawInstruction>,
     filled_instructions_sender: Arc<ArrayQueue<Vec<DrawInstruction>>>,
     empty_instructions_recv: Exclusive<Receiver<Vec<DrawInstruction>>>,
+    active_camera: Option<Camera>,
 }
 
 impl Graphics {
@@ -63,7 +75,7 @@ impl Graphics {
     /// Even though this function never returns, the universe will be safely dropped if a
     /// component has requested an exit, even if an exit with an error was requested. Any data
     /// not stored in the Universe will not be dropped however
-    pub async fn run(mut universe: Universe, count: LoopCount, delta: DeltaStrategy, title: impl Into<String>) -> ! {
+    pub async fn run(mut universe: Universe, count: LoopCount, delta: DeltaStrategy, title: impl Into<String>, scaling_mode: ScalingMode) -> ! {
         let event_loop = EventLoop::new();
         let window = WindowBuilder::new().with_title(title).build(&event_loop).unwrap();
 
@@ -143,11 +155,44 @@ impl Graphics {
                 }],
                 label: Some("transform_bind_group_layout"),
             });
+        
+        let camera_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+                label: Some("camera_matrix_bind_group_layout"),
+            });
+        
+        let camera_matrix_buffer = 
+            device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("camera_matrix_buffer_descriptor"),
+                size: size_of::<f32>() as u64 * 6,
+                usage: BufferUsages::UNIFORM.union(BufferUsages::COPY_DST),
+                mapped_at_creation: false,
+            });
+        
+        let camera_matrix_buffer_bind_group =
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                layout: &camera_bind_group_layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(camera_matrix_buffer.as_entire_buffer_binding()),
+                }],
+                label: Some("transform_bind_group"),
+            });
 
         let PolygonRendererCreation {
             mut poly_render,
             tex_grp_layout,
-        } = PolygonRenderer::new(&device, &config, &transform_bind_group_layout);
+        } = PolygonRenderer::new(&device, &config, &transform_bind_group_layout, &camera_bind_group_layout);
 
         let graphics = Arc::new(GraphicsInner {
             surface,
@@ -156,7 +201,8 @@ impl Graphics {
             config: Mutex::new(Config { config, size }),
             window,
             texture_bind_grp_layout: tex_grp_layout,
-            transform_bind_grp_layout: transform_bind_group_layout,
+            transform_bind_group_layout,
+            camera_matrix_buffer
         });
 
         let cloned = graphics.clone();
@@ -177,6 +223,7 @@ impl Graphics {
                 filled_instructions_sender,
                 empty_instructions_recv: Exclusive::new(empty_instructions_recv),
                 current_instructions_queue: SegQueue::new(),
+                active_camera: None
             });
             if let Some(result) = universe.loop_many(count, delta) {
                 drop(universe);
@@ -257,7 +304,7 @@ impl Graphics {
                                 depth_stencil_attachment: None,
                             });
 
-                        poly_render.draw_all(&mut render_pass);
+                        poly_render.draw_all(&mut render_pass, &camera_matrix_buffer_bind_group);
                     }
                     // submit will accept anything that implements IntoIter
                     graphics.queue.submit(std::iter::once(encoder.finish()));
@@ -334,6 +381,30 @@ impl Singleton for Graphics {
                 std::hint::spin_loop()
             }
         });
+
+        let camera_floats = self.active_camera.as_ref().map(|x| {
+            let scale = x.scale.get_inner();
+            let rot = x.rotation.get_inner();
+            let origin = x.origin.get_inner();
+            let basis = Matrix2::<f32>::new(rot.cos() * scale.x, rot.sin() * scale.x, -rot.sin() * scale.y, rot.cos() * scale.y);
+            let basis = basis.try_inverse().unwrap_or_else(|| Matrix2::identity());
+            [
+                basis.m11,
+                basis.m12,
+                basis.m21,
+                basis.m22,
+                origin.x,
+                origin.y
+            ]
+        }).unwrap_or_else(|| {
+            [
+                2.0, 0.0,
+                0.0, 2.0,
+                0.0, 0.0
+            ]
+        });
+
+        self.inner.queue.write_buffer(&self.inner.camera_matrix_buffer, 0, bytemuck::cast_slice(&camera_floats));
 
         vec.reserve(self.current_instructions_queue.len());
         while let Some(instruction) = self.current_instructions_queue.pop() {

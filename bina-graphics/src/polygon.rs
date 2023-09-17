@@ -9,36 +9,38 @@ use bina_ecs::{
     component::{AtomicNumber, Component, NumberField, NumberFieldRef, Processable, ComponentField},
     triomphe::Arc,
 };
-use bytemuck::{Pod, Zeroable};
 use image::Rgba;
 use lyon::{
     lyon_tessellation::{BuffersBuilder, FillOptions, FillTessellator, FillVertex, VertexBuffers},
     math::point,
     path::traits::PathBuilder,
 };
+use nalgebra::Matrix2;
 use wgpu::{util::DeviceExt, BufferUsages};
 
 use crate::{drawing::DrawInstruction, renderers::DrawPolygon, texture::Texture, Graphics};
 
-#[derive(Pod, Clone, Copy, Zeroable)]
-#[repr(C)]
-struct TextureVertex {
-    x: f32,
-    y: f32,
-    tx: f32,
-    ty: f32,
-}
+// #[derive(Pod, Clone, Copy, Zeroable)]
+// #[repr(C)]
+// struct TextureVertex {
+//     x: f32,
+//     y: f32,
+//     tx: f32,
+//     ty: f32,
+// }
 
-#[derive(Pod, Clone, Copy, Zeroable)]
-#[repr(C)]
-pub struct Vertex {
-    pub x: f32,
-    pub y: f32,
-}
+// #[derive(Pod, Clone, Copy, Zeroable)]
+// #[repr(C)]
+// pub struct Vertex {
+//     pub x: f32,
+//     pub y: f32,
+// }
+
+pub type Vector2 = nalgebra::Vector2<f32>;
 
 pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'static> =
     wgpu::VertexBufferLayout {
-        array_stride: std::mem::size_of::<Vertex>() as wgpu::BufferAddress * 2,
+        array_stride: std::mem::size_of::<f32>() as wgpu::BufferAddress * 4,
         step_mode: wgpu::VertexStepMode::Vertex,
         attributes: &[
             wgpu::VertexAttribute {
@@ -47,7 +49,7 @@ pub(crate) const TEXTURE_VERTEX_BUFFER_DESCRIPTOR: wgpu::VertexBufferLayout<'sta
                 format: wgpu::VertexFormat::Float32x2,
             },
             wgpu::VertexAttribute {
-                offset: std::mem::size_of::<Vertex>() as wgpu::BufferAddress,
+                offset: std::mem::size_of::<f32>() as wgpu::BufferAddress * 2,
                 shader_location: 1,
                 format: wgpu::VertexFormat::Float32x2,
             },
@@ -80,7 +82,7 @@ pub enum Material {
 pub struct Polygon {
     pub(crate) inner: Arc<PolygonInner>,
     origin: NumberField<Vector>,
-    basis: [lyon::math::Vector; 2],
+    basis: Matrix2<f32>,
     scale: NumberField<Vector>,
     rotation: NumberField<f32>,
     z: NumberField<u32>,
@@ -96,7 +98,7 @@ pub(crate) struct PolygonInner {
 }
 
 impl Polygon {
-    pub fn new(graphics: &Graphics, vertices: &[(Vertex, Vertex)], material: Material) -> Self {
+    pub fn new(graphics: &Graphics, vertices: &[(Vector, Vector)], material: Material) -> Self {
         let mut builder = lyon::path::Path::builder_with_attributes(2);
         let mut first = true;
         for (v, tex_v) in vertices {
@@ -111,7 +113,7 @@ impl Polygon {
         let path = builder.build();
 
         let mut tessellator = FillTessellator::new();
-        let mut geometry: VertexBuffers<TextureVertex, u32> = VertexBuffers::new();
+        let mut geometry: VertexBuffers<[f32; 4], u32> = VertexBuffers::new();
 
         {
             // Compute the tessellation.
@@ -121,12 +123,15 @@ impl Polygon {
                     &FillOptions::default(),
                     &mut BuffersBuilder::new(&mut geometry, |mut vertex: FillVertex| {
                         let attrs = vertex.interpolated_attributes();
-                        TextureVertex {
-                            tx: attrs[0],
-                            ty: attrs[1],
-                            x: vertex.position().x,
-                            y: vertex.position().y,
-                        }
+                        let tx = attrs[0];
+                        let ty = attrs[1];
+
+                        [
+                            vertex.position().x,
+                            vertex.position().y,
+                            tx,
+                            ty
+                        ]
                     }),
                 )
                 .unwrap();
@@ -159,7 +164,7 @@ impl Polygon {
                     .inner
                     .device
                     .create_bind_group(&wgpu::BindGroupDescriptor {
-                        layout: &graphics.inner.transform_bind_grp_layout,
+                        layout: &graphics.inner.transform_bind_group_layout,
                         entries: &[wgpu::BindGroupEntry {
                             binding: 0,
                             resource: wgpu::BindingResource::Buffer(transform_buffer.as_entire_buffer_binding()),
@@ -170,7 +175,7 @@ impl Polygon {
             }),
             origin: NumberField::new(Vector::new(0.0, 0.0)),
             z: NumberField::new(0),
-            basis: [lyon::math::vector(1.0, 0.0), lyon::math::vector(0.0, 1.0)],
+            basis: Matrix2::identity(),
             scale: NumberField::new(Vector::new(1.0, 1.0)),
             rotation: NumberField::new(1.0),
         }
@@ -202,10 +207,7 @@ impl Component for Polygon {
         self.scale.process_modifiers();
         let rot = self.rotation.get_inner();
         let scale = self.scale.get_inner();
-        self.basis = [
-            lyon::math::vector(rot.cos(), rot.sin()) * scale.0.x,
-            lyon::math::vector(-rot.sin(), rot.cos()) * scale.0.y
-        ]
+        self.basis = Matrix2::new(rot.cos() * scale.0.x, rot.sin() * scale.0.x, -rot.sin() * scale.0.y, rot.cos() * scale.0.y);
     }
 }
 
@@ -227,10 +229,10 @@ impl Processable for Polygon {
             &component.inner.transform_buffer,
             0,
             bytemuck::cast_slice(&[
-                basis[0].x,
-                basis[0].y,
-                basis[1].x,
-                basis[1].y,
+                basis.m11,
+                basis.m12,
+                basis.m21,
+                basis.m22,
                 component.origin.0.x,
                 component.origin.0.y,
             ]),
@@ -344,5 +346,5 @@ pub struct PolygonRef<'a> {
     pub z: NumberFieldRef<'a, u32>,
     pub rotation: NumberFieldRef<'a, f32>,
     pub scale: NumberFieldRef<'a, Vector>,
-    pub(crate) basis: &'a [lyon::math::Vector; 2],
+    pub(crate) basis: &'a Matrix2<f32>,
 }

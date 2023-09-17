@@ -1,6 +1,6 @@
 use std::hint::unreachable_unchecked;
 
-use wgpu::{BindGroupLayout, Device, RenderPass, RenderPipeline, SurfaceConfiguration};
+use wgpu::{BindGroupLayout, Device, RenderPass, RenderPipeline, SurfaceConfiguration, BindGroup};
 
 use crate::polygon::{Material, TEXTURE_VERTEX_BUFFER_DESCRIPTOR};
 
@@ -12,7 +12,7 @@ pub(crate) struct TexturedPolygonRenderer {
 }
 
 impl TexturedPolygonRenderer {
-    pub(crate) fn new(device: &Device, config: &SurfaceConfiguration, transform_bind_group_layout: &BindGroupLayout) -> (Self, BindGroupLayout) {
+    pub(crate) fn new(device: &Device, config: &SurfaceConfiguration, transform_bind_group_layout: &BindGroupLayout, camera_bind_group_layout: &BindGroupLayout) -> (Self, BindGroupLayout) {
         let texture_bind_group_layout =
             device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
                 entries: &[
@@ -43,7 +43,8 @@ impl TexturedPolygonRenderer {
                 label: Some("Render Pipeline Layout"),
                 bind_group_layouts: &[
                     &texture_bind_group_layout,
-                    transform_bind_group_layout
+                    transform_bind_group_layout,
+                    camera_bind_group_layout
                 ],
                 push_constant_ranges: &[],
             });
@@ -103,7 +104,7 @@ impl TexturedPolygonRenderer {
         self.buffer.push(polygon);
     }
 
-    pub(super) fn draw_all<'a>(&'a mut self, render_pass: &mut RenderPass<'a>) {
+    pub(super) fn draw_all<'a>(&'a mut self, render_pass: &mut RenderPass<'a>, camera_matrix_buffer_bind_group: &'a BindGroup) {
         render_pass.set_pipeline(&self.render_pipeline);
         let mut bind_grp_tracker = BindGroupTracker::new(0);
 
@@ -118,6 +119,7 @@ impl TexturedPolygonRenderer {
 
             bind_grp_tracker.set_bind_group(render_pass, &texture.texture.bind_group);
             render_pass.set_bind_group(1, &polygon.transform_bind_group, &[]);
+            render_pass.set_bind_group(2, camera_matrix_buffer_bind_group, &[]);
             render_pass.set_vertex_buffer(0, polygon.vertices.slice(..));
             render_pass.set_index_buffer(polygon.indices.slice(..), wgpu::IndexFormat::Uint32);
             render_pass.draw_indexed(0..polygon.indices_count, 0, 0..1);
